@@ -1,27 +1,48 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
+  ArrowRight,
   CalendarDays,
   CheckCircle2,
+  ClipboardList,
   Clock3,
   Coffee,
-  LoaderCircle,
   RefreshCw,
   ShieldAlert,
   Users,
   UserCheck,
   UserMinus,
   UserX,
-  Zap,
 } from "lucide-react";
 
 import { api, getApiError } from "../../lib/api";
+import { useAuth } from "../../context/AuthContext";
 
 const REFRESH_INTERVAL = 30000;
 const TIME_ZONE = "Asia/Manila";
+
+/**
+ * BRAND CONFIG
+ * Palette: white + blue + red only (grays for neutral text/borders).
+ *
+ *   Blue        #1D63D6  primary (Royale Cold Storage)
+ *   Deep blue   #0B3A8C  headings, strong numbers
+ *   Light blue  #EAF1FD / #F7FAFE  chips and soft surfaces
+ *   Red         #C8102E  alerts, absent, overbreak (Red Ribbon)
+ *   Light red   #FDECEF  alert surfaces
+ *   Border      #E3EAF5  all card borders
+ */
+const BRAND = {
+  systemName: "Warehouse RCS - RR Management",
+  rcsLogo:
+    "https://royalecoldstorage.com.ph/wp-content/uploads/2024/07/royal-cold-storage-logo-2022.webp",
+  redRibbonLogo:
+    "https://upload.wikimedia.org/wikipedia/en/5/58/Red_Ribbon_Bakeshop_Logo.webp",
+};
+
+/* ---------- Helpers ---------- */
 
 function getToday() {
   return new Intl.DateTimeFormat("en-PH", {
@@ -49,11 +70,7 @@ function formatDuration(minutes = 0) {
   const hours = Math.floor(value / 60);
   const remainingMinutes = value % 60;
 
-  if (hours > 0) {
-    return `${hours}h ${remainingMinutes}m`;
-  }
-
-  return `${remainingMinutes}m`;
+  return hours > 0 ? `${hours}h ${remainingMinutes}m` : `${remainingMinutes}m`;
 }
 
 function getActivityLabel(type) {
@@ -76,84 +93,26 @@ function getActivityIcon(type) {
   return Activity;
 }
 
-function getActivityColor(type) {
-  if (type === "clock_in") {
-    return "bg-emerald-50 text-emerald-600";
-  }
+/* ---------- Shared building blocks ---------- */
 
-  if (type === "clock_out") {
-    return "bg-slate-100 text-slate-600";
-  }
-
-  if (type === "break_start") {
-    return "bg-amber-50 text-amber-600";
-  }
-
-  if (type === "break_end") {
-    return "bg-teal-50 text-teal-600";
-  }
-
-  return "bg-slate-100 text-slate-600";
-}
-
-function StatCard({
-  label,
-  value,
-  detail,
-  icon: Icon,
-  color = "teal",
-  loading,
-}) {
-  const colors = {
-    teal: "bg-teal-50 text-teal-700",
-    green: "bg-emerald-50 text-emerald-700",
-    red: "bg-rose-50 text-rose-700",
-    amber: "bg-amber-50 text-amber-700",
-    blue: "bg-blue-50 text-blue-700",
-    slate: "bg-slate-100 text-slate-600",
-  };
-
+function Card({ children, className = "" }) {
   return (
-    <div className="group rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/30 transition duration-200 hover:-translate-y-0.5 hover:shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-
-          <div className="mt-3 flex items-baseline gap-2">
-            <p className="text-3xl font-semibold tracking-tight text-slate-900">
-              {loading ? "—" : (value ?? 0).toLocaleString()}
-            </p>
-          </div>
-
-          <p className="mt-2 text-xs text-slate-400">{detail}</p>
-        </div>
-
-        <div
-          className={`shrink-0 rounded-xl p-3 ${colors[color] || colors.teal}`}
-        >
-          <Icon size={20} strokeWidth={1.9} />
-        </div>
-      </div>
+    <div
+      className={`rounded-2xl border border-[#E3EAF5] bg-white p-5 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-6 ${className}`}
+    >
+      {children}
     </div>
   );
 }
 
-function SectionHeading({ title, description, icon: Icon, action }) {
+function SectionHeading({ title, description, action }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-3">
-        {Icon && (
-          <div className="rounded-xl bg-slate-100 p-2 text-slate-600">
-            <Icon size={18} />
-          </div>
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <h2 className="text-base font-semibold text-[#0B3A8C]">{title}</h2>
+        {description && (
+          <p className="mt-0.5 text-xs text-slate-500">{description}</p>
         )}
-
-        <div>
-          <h2 className="font-semibold text-slate-900">{title}</h2>
-          {description && (
-            <p className="mt-0.5 text-xs text-slate-400">{description}</p>
-          )}
-        </div>
       </div>
 
       {action}
@@ -164,105 +123,405 @@ function SectionHeading({ title, description, icon: Icon, action }) {
 function EmptyState({ icon: Icon, title, description }) {
   return (
     <div className="flex min-h-[190px] flex-col items-center justify-center px-5 text-center">
-      <div className="mb-3 rounded-2xl bg-slate-50 p-4 text-slate-400">
+      <div className="mb-3 rounded-2xl bg-[#EAF1FD] p-4 text-[#1D63D6]">
         <Icon size={25} strokeWidth={1.7} />
       </div>
 
       <p className="text-sm font-medium text-slate-700">{title}</p>
 
-      <p className="mt-1 max-w-xs text-xs leading-5 text-slate-400">
+      <p className="mt-1 max-w-xs text-xs leading-5 text-slate-500">
         {description}
       </p>
     </div>
   );
 }
 
+/* ---------- Header ---------- */
+
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const time = new Intl.DateTimeFormat("en-PH", {
+    timeZone: TIME_ZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).format(now);
+
+  return <span className="tabular-nums">{time}</span>;
+}
+
+function LogoPlate({ src, alt }) {
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      className="h-10 w-auto max-w-[130px] object-contain sm:h-12 sm:max-w-[160px]"
+    />
+  );
+}
+
+function Header({ today, refreshing, onRefresh }) {
+  return (
+    <header className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
+      {/* Ribbon accent: red tab + blue line */}
+      <div className="flex h-1.5">
+        <div className="w-24 bg-[#C8102E]" />
+        <div className="flex-1 bg-[#1D63D6]" />
+      </div>
+
+      <div className="flex flex-col gap-5 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+          <div className="flex items-center gap-4">
+            <LogoPlate src={BRAND.rcsLogo} alt="Royale Cold Storage" />
+            <span className="h-8 w-px bg-[#E3EAF5]" />
+            <LogoPlate src={BRAND.redRibbonLogo} alt="Red Ribbon" />
+          </div>
+
+          <div className="sm:border-l sm:border-[#E3EAF5] sm:pl-6">
+            <h1 className="text-2xl font-semibold tracking-tight text-[#0B3A8C]">
+              Dashboard
+            </h1>
+            <p className="mt-0.5 text-sm text-slate-500">{BRAND.systemName}</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-3 rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] px-3.5 py-2">
+            <CalendarDays size={18} className="text-[#1D63D6]" />
+            <div className="leading-tight">
+              <p className="text-sm font-semibold text-[#0B3A8C]">
+                <LiveClock />
+              </p>
+              <p className="text-xs text-slate-500">{today}</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* ---------- Attendance rate (donut) ---------- */
+
+function AttendanceRing({ stats, loading }) {
+  const total = Number(stats.total_employees) || 0;
+  const present = Number(stats.present) || 0;
+  const absent = Number(stats.absent) || 0;
+  const noRecord = Number(stats.no_attendance) || 0;
+
+  const rate =
+    total > 0 ? Math.min(100, Math.round((present / total) * 100)) : 0;
+
+  const size = 176;
+  const strokeWidth = 16;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - rate / 100);
+
+  return (
+    <Card className="flex flex-col">
+      <SectionHeading
+        title="Attendance rate"
+        description="Present, late and half day vs total RCS - RR"
+      />
+
+      <div className="flex flex-1 items-center justify-center py-6">
+        <div className="relative" style={{ width: size, height: size }}>
+          <svg
+            width={size}
+            height={size}
+            viewBox={`0 0 ${size} ${size}`}
+            className="-rotate-90"
+            role="img"
+            aria-label={`Attendance rate ${rate} percent`}
+          >
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke="#EEF3FB"
+              strokeWidth={strokeWidth}
+            />
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke="#1D63D6"
+              strokeWidth={strokeWidth}
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={loading ? circumference : offset}
+              className="transition-all duration-700"
+            />
+          </svg>
+
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <p className="text-4xl font-semibold tracking-tight text-[#0B3A8C]">
+              {loading ? "—" : `${rate}%`}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {loading ? "" : `${present} of ${total}`}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 divide-x divide-[#EEF3FB] border-t border-[#EEF3FB] pt-4 text-center">
+        <div>
+          <p className="text-lg font-semibold text-[#1D63D6]">
+            {loading ? "—" : present}
+          </p>
+          <p className="text-xs text-slate-500">Present</p>
+        </div>
+        <div>
+          <p className="text-lg font-semibold text-[#C8102E]">
+            {loading ? "—" : absent}
+          </p>
+          <p className="text-xs text-slate-500">Absent</p>
+        </div>
+        <div>
+          <p className="text-lg font-semibold text-slate-500">
+            {loading ? "—" : noRecord}
+          </p>
+          <p className="text-xs text-slate-500">No record</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/* ---------- KPI cards ---------- */
+
+function StatCard({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  tone = "blue",
+  loading,
+}) {
+  const tones = {
+    blue: { chip: "bg-[#EAF1FD] text-[#1D63D6]", value: "text-[#0B3A8C]" },
+    red: { chip: "bg-[#FDECEF] text-[#C8102E]", value: "text-[#C8102E]" },
+  };
+
+  const t = tones[tone] || tones.blue;
+
+  return (
+    <Card className="!p-4 sm:!p-5">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-medium text-slate-600">{label}</p>
+
+        <div className={`shrink-0 rounded-lg p-2 ${t.chip}`}>
+          <Icon size={16} strokeWidth={2} />
+        </div>
+      </div>
+
+      <p className={`mt-3 text-3xl font-semibold tracking-tight ${t.value}`}>
+        {loading ? "—" : (value ?? 0).toLocaleString()}
+      </p>
+
+      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+    </Card>
+  );
+}
+
+/* ---------- Quick links ---------- */
+
+const QUICK_LINKS = [
+  {
+    label: "Live monitoring",
+    description: "Watch the floor in real time",
+    path: "/monitoring",
+    icon: Activity,
+    roles: ["admin", "hr", "supervisor"],
+  },
+  {
+    label: "Attendance records",
+    description: "Review and correct time logs",
+    path: "/attendance",
+    icon: Clock3,
+    roles: ["admin", "hr", "supervisor"],
+  },
+  {
+    label: "Breaktime monitoring",
+    description: "Track breaks and overbreaks",
+    path: "/breaks",
+    icon: ClipboardList,
+    roles: ["admin", "hr", "supervisor"],
+  },
+  {
+    label: "Employees",
+    description: "Manage the RCS - RR list",
+    path: "/employees",
+    icon: Users,
+    roles: ["admin", "hr"],
+  },
+];
+
+function QuickLinks({ role }) {
+  const links = QUICK_LINKS.filter((item) => item.roles.includes(role));
+
+  if (links.length === 0) return null;
+
+  return (
+    <section
+      aria-label="Quick links"
+      className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+    >
+      {links.map((item) => {
+        const Icon = item.icon;
+
+        return (
+          <Link
+            key={item.path}
+            to={item.path}
+            className="group flex items-center gap-3 rounded-2xl border border-[#E3EAF5] bg-white p-4 shadow-[0_1px_2px_rgba(11,58,140,0.04)] transition hover:border-[#1D63D6] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6]"
+          >
+            <div className="rounded-xl bg-[#EAF1FD] p-2.5 text-[#1D63D6] transition group-hover:bg-[#1D63D6] group-hover:text-white">
+              <Icon size={18} />
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                {item.label}
+              </p>
+              <p className="truncate text-xs text-slate-500">
+                {item.description}
+              </p>
+            </div>
+
+            <ArrowRight
+              size={16}
+              className="shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-[#C8102E]"
+            />
+          </Link>
+        );
+      })}
+    </section>
+  );
+}
+
+/* ---------- Attendance breakdown ---------- */
+
 function AttendanceBreakdown({ attendance, loading }) {
+  // Blue = attending, red = not attending, gray = unknown.
   const items = [
+    { label: "Present", value: attendance?.present || 0, color: "#1D63D6" },
+    { label: "Half day", value: attendance?.half_day || 0, color: "#6C9BEA" },
+    { label: "On leave", value: attendance?.on_leave || 0, color: "#B9CFF4" },
+    { label: "Late", value: attendance?.late || 0, color: "#EE8696" },
+    { label: "Absent", value: attendance?.absent || 0, color: "#C8102E" },
     {
-      label: "Present",
-      value: attendance?.present || 0,
-      color: "bg-emerald-500",
-      text: "text-emerald-700",
-    },
-    {
-      label: "Late",
-      value: attendance?.late || 0,
-      color: "bg-amber-500",
-      text: "text-amber-700",
-    },
-    {
-      label: "Absent",
-      value: attendance?.absent || 0,
-      color: "bg-rose-500",
-      text: "text-rose-700",
-    },
-    {
-      label: "On Leave",
-      value: attendance?.on_leave || 0,
-      color: "bg-blue-500",
-      text: "text-blue-700",
-    },
-    {
-      label: "Half Day",
-      value: attendance?.half_day || 0,
-      color: "bg-violet-500",
-      text: "text-violet-700",
-    },
-    {
-      label: "No Record",
+      label: "No record",
       value: attendance?.no_attendance || 0,
-      color: "bg-slate-400",
-      text: "text-slate-600",
+      color: "#CBD5E1",
     },
   ];
 
   const total = items.reduce((sum, item) => sum + item.value, 0);
 
   return (
-    <div className="mt-6 space-y-5">
-      {items.map((item) => {
-        const percentage = total > 0 ? (item.value / total) * 100 : 0;
+    <div className="mt-6">
+      <div className="flex h-3 overflow-hidden rounded-full bg-[#EEF3FB]">
+        {total > 0 &&
+          items.map((item) => (
+            <div
+              key={item.label}
+              className="h-full transition-all duration-500"
+              style={{
+                width: `${(item.value / total) * 100}%`,
+                backgroundColor: item.color,
+              }}
+              title={`${item.label}: ${item.value}`}
+            />
+          ))}
+      </div>
 
-        return (
-          <div key={item.label}>
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-medium text-slate-600">
+      <ul className="mt-5 grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        {items.map((item) => {
+          const percentage =
+            total > 0 ? Math.round((item.value / total) * 100) : 0;
+
+          return (
+            <li
+              key={item.label}
+              className="flex items-center justify-between gap-3"
+            >
+              <span className="flex items-center gap-2.5 text-sm text-slate-600">
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ backgroundColor: item.color }}
+                />
                 {item.label}
               </span>
 
-              <span className={`text-sm font-semibold ${item.text}`}>
-                {loading ? "—" : item.value}
+              <span className="text-sm">
+                <span className="font-semibold text-[#0B3A8C]">
+                  {loading ? "—" : item.value}
+                </span>
+                <span className="ml-1.5 text-xs text-slate-400">
+                  {loading ? "" : `${percentage}%`}
+                </span>
               </span>
-            </div>
+            </li>
+          );
+        })}
+      </ul>
 
-            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${item.color}`}
-                style={{ width: `${percentage}%` }}
-              />
-            </div>
-          </div>
-        );
-      })}
+      <div className="mt-6 grid grid-cols-2 gap-3 border-t border-[#EEF3FB] pt-5">
+        <div className="rounded-xl bg-[#F7FAFE] p-3">
+          <p className="text-xs text-slate-500">Rest day</p>
+          <p className="mt-1 text-xl font-semibold text-[#0B3A8C]">
+            {loading ? "—" : attendance?.rest_day || 0}
+          </p>
+        </div>
+
+        <div className="rounded-xl bg-[#F7FAFE] p-3">
+          <p className="text-xs text-slate-500">Holiday</p>
+          <p className="mt-1 text-xl font-semibold text-[#0B3A8C]">
+            {loading ? "—" : attendance?.holiday || 0}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
 
-function DepartmentSummary({ departments, loading }) {
-  const maxEmployees = Math.max(
-    1,
-    ...(departments || []).map((item) => item.total_employees || 0),
-  );
+/* ---------- Departments (table layout) ---------- */
 
+const DEPT_GRID =
+  "md:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,0.55fr))_minmax(0,1.3fr)]";
+
+function DepartmentSummary({ departments, loading }) {
   if (loading) {
     return (
-      <div className="space-y-5 pt-6">
-        {[1, 2, 3].map((item) => (
-          <div key={item} className="animate-pulse space-y-2">
-            <div className="h-4 w-32 rounded bg-slate-100" />
-            <div className="h-2 rounded-full bg-slate-100" />
-          </div>
+      <div className="space-y-4 pt-6">
+        {[1, 2, 3, 4].map((item) => (
+          <div
+            key={item}
+            className="h-12 animate-pulse rounded-xl bg-[#F4F8FE]"
+          />
         ))}
       </div>
     );
@@ -279,60 +538,90 @@ function DepartmentSummary({ departments, loading }) {
   }
 
   return (
-    <div className="mt-5 space-y-5">
-      {departments.map((department) => {
-        const percentage = (department.total_employees / maxEmployees) * 100;
+    <div className="mt-5">
+      {/* Column titles (desktop only) */}
+      <div
+        className={`hidden gap-4 border-b border-[#EEF3FB] pb-2 text-xs font-medium text-slate-500 md:grid ${DEPT_GRID}`}
+      >
+        <span>Department</span>
+        <span className="text-right">Total</span>
+        <span className="text-right">Present</span>
+        <span className="text-right">Absent</span>
+        <span>Attendance rate</span>
+      </div>
 
-        const attendanceRate =
-          department.total_employees > 0
-            ? Math.round(
-                (department.present / department.total_employees) * 100,
-              )
-            : 0;
+      <ul className="divide-y divide-[#EEF3FB]">
+        {departments.map((department) => {
+          const rate =
+            department.total_employees > 0
+              ? Math.round(
+                  (department.present / department.total_employees) * 100,
+                )
+              : 0;
 
-        return (
-          <div key={department.id}>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-800">
+          return (
+            <li
+              key={department.id}
+              className={`grid grid-cols-3 gap-x-4 gap-y-2 py-3.5 md:items-center ${DEPT_GRID}`}
+            >
+              <div className="col-span-3 min-w-0 md:col-span-1">
+                <p className="truncate text-sm font-semibold text-[#0B3A8C]">
                   {department.name}
                 </p>
 
-                <p className="mt-0.5 text-xs text-slate-400">
-                  {department.present} present · {department.absent} absent
+                {department.overbreak > 0 && (
+                  <p className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-[#C8102E]">
+                    <AlertTriangle size={11} />
+                    {department.overbreak} overbreak
+                  </p>
+                )}
+              </div>
+
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Total</p>
+                <p className="text-sm font-medium text-slate-700">
+                  {department.total_employees}
                 </p>
               </div>
 
-              <div className="shrink-0 text-right">
-                <p className="text-sm font-semibold text-slate-800">
-                  {department.present}/{department.total_employees}
-                </p>
-
-                <p className="text-xs text-slate-400">
-                  {attendanceRate}% present
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Present</p>
+                <p className="text-sm font-semibold text-[#1D63D6]">
+                  {department.present}
                 </p>
               </div>
-            </div>
 
-            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className="h-full rounded-full bg-teal-500 transition-all duration-500"
-                style={{ width: `${percentage}%` }}
-              />
-            </div>
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Absent</p>
+                <p
+                  className={`text-sm font-semibold ${
+                    department.absent > 0 ? "text-[#C8102E]" : "text-slate-400"
+                  }`}
+                >
+                  {department.absent}
+                </p>
+              </div>
 
-            {department.overbreak > 0 && (
-              <p className="mt-2 flex items-center gap-1 text-xs font-medium text-rose-600">
-                <AlertTriangle size={12} />
-                {department.overbreak} employee(s) overbreak
-              </p>
-            )}
-          </div>
-        );
-      })}
+              <div className="col-span-3 flex items-center gap-3 md:col-span-1">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#EEF3FB]">
+                  <div
+                    className="h-full rounded-full bg-[#1D63D6] transition-all duration-500"
+                    style={{ width: `${rate}%` }}
+                  />
+                </div>
+                <span className="w-10 shrink-0 text-right text-xs font-medium text-slate-600">
+                  {rate}%
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
+
+/* ---------- Breaktime ---------- */
 
 function BreaktimePanel({ employees, loading }) {
   if (loading) {
@@ -341,7 +630,7 @@ function BreaktimePanel({ employees, loading }) {
         {[1, 2, 3].map((item) => (
           <div
             key={item}
-            className="h-20 animate-pulse rounded-xl bg-slate-50"
+            className="h-20 animate-pulse rounded-xl bg-[#F4F8FE]"
           />
         ))}
       </div>
@@ -358,77 +647,71 @@ function BreaktimePanel({ employees, loading }) {
     );
   }
 
+  // Overbreak first, longest excess on top
+  const sorted = [...employees].sort(
+    (a, b) => (b.current_excess_minutes || 0) - (a.current_excess_minutes || 0),
+  );
+
   return (
     <div className="mt-5 space-y-3">
-      {employees.slice(0, 5).map((employee) => {
+      {sorted.slice(0, 5).map((employee) => {
         const overbreak = employee.current_excess_minutes > 0;
 
         return (
           <div
             key={employee.id}
-            className={`rounded-xl border p-4 ${
+            className={`flex items-start justify-between gap-3 rounded-xl border p-4 ${
               overbreak
-                ? "border-rose-200 bg-rose-50/50"
-                : "border-slate-100 bg-slate-50/70"
+                ? "border-[#F5C2CA] bg-[#FDECEF]"
+                : "border-[#E3EAF5] bg-[#F7FAFE]"
             }`}
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-800">
-                  {employee.employee_name}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                {employee.employee_name}
+              </p>
+
+              <p className="mt-0.5 text-xs text-slate-500">
+                {employee.employee_number || "No employee number"}
+                {employee.department_name
+                  ? ` · ${employee.department_name}`
+                  : ""}
+              </p>
+
+              <p className="mt-2 flex items-center gap-1 text-xs text-slate-500">
+                <Coffee size={13} />
+                {employee.break_name || "Break"}
+              </p>
+            </div>
+
+            <div className="shrink-0 text-right">
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  overbreak
+                    ? "bg-[#C8102E] text-white"
+                    : "bg-[#EAF1FD] text-[#1D63D6]"
+                }`}
+              >
+                {overbreak ? <AlertTriangle size={11} /> : <Clock3 size={11} />}
+                {overbreak ? "Overbreak" : "On break"}
+              </span>
+
+              {overbreak && (
+                <p className="mt-2 text-sm font-semibold text-[#C8102E]">
+                  +{formatDuration(employee.current_excess_minutes)}
                 </p>
+              )}
 
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {employee.employee_number || "No employee number"}
-                  {employee.department_name
-                    ? ` · ${employee.department_name}`
-                    : ""}
-                </p>
-
-                <p className="mt-2 flex items-center gap-1 text-xs text-slate-500">
-                  <Coffee size={13} />
-                  {employee.break_name || "Break"}
-                </p>
-              </div>
-
-              <div className="shrink-0 text-right">
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${
-                    overbreak
-                      ? "bg-rose-100 text-rose-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}
-                >
-                  {overbreak ? (
-                    <>
-                      <AlertTriangle size={11} />
-                      OVERBREAK
-                    </>
-                  ) : (
-                    <>
-                      <Clock3 size={11} />
-                      ON BREAK
-                    </>
-                  )}
-                </span>
-
-                {overbreak && (
-                  <p className="mt-2 text-sm font-semibold text-rose-700">
-                    +{formatDuration(employee.current_excess_minutes)}
-                  </p>
-                )}
-
-                <p className="mt-1 text-xs text-slate-400">
-                  {formatDuration(employee.elapsed_minutes)} elapsed
-                </p>
-              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                {formatDuration(employee.elapsed_minutes)} elapsed
+              </p>
             </div>
           </div>
         );
       })}
 
       {employees.length > 5 && (
-        <p className="pt-1 text-center text-xs text-slate-400">
+        <p className="pt-1 text-center text-xs text-slate-500">
           Showing 5 of {employees.length} active breaks
         </p>
       )}
@@ -436,16 +719,18 @@ function BreaktimePanel({ employees, loading }) {
   );
 }
 
+/* ---------- Activities (timeline) ---------- */
+
 function RecentActivities({ activities, loading }) {
   if (loading) {
     return (
       <div className="space-y-4 pt-5">
         {[1, 2, 3].map((item) => (
           <div key={item} className="flex animate-pulse gap-3">
-            <div className="h-10 w-10 rounded-xl bg-slate-100" />
+            <div className="h-9 w-9 rounded-full bg-[#EEF3FB]" />
             <div className="flex-1 space-y-2 pt-1">
-              <div className="h-3 w-32 rounded bg-slate-100" />
-              <div className="h-3 w-24 rounded bg-slate-100" />
+              <div className="h-3 w-32 rounded bg-[#EEF3FB]" />
+              <div className="h-3 w-24 rounded bg-[#EEF3FB]" />
             </div>
           </div>
         ))}
@@ -463,43 +748,52 @@ function RecentActivities({ activities, loading }) {
     );
   }
 
+  const items = activities.slice(0, 8);
+
   return (
-    <div className="mt-5 divide-y divide-slate-100">
-      {activities.slice(0, 8).map((activity) => {
+    <ol className="mt-5">
+      {items.map((activity, index) => {
         const Icon = getActivityIcon(activity.event_type);
+        const isLast = index === items.length - 1;
 
         return (
-          <div key={activity.id} className="flex items-center gap-3 py-3">
-            <div
-              className={`shrink-0 rounded-xl p-2.5 ${getActivityColor(
-                activity.event_type,
-              )}`}
-            >
-              <Icon size={17} />
+          <li key={activity.id} className="relative flex gap-3 pb-5 last:pb-0">
+            {/* Timeline rail */}
+            {!isLast && (
+              <span className="absolute left-[17px] top-9 bottom-0 w-px bg-[#E3EAF5]" />
+            )}
+
+            <div className="z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#E3EAF5] bg-[#EAF1FD] text-[#1D63D6]">
+              <Icon size={16} />
             </div>
 
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium text-slate-800">
-                {activity.employee_name}
-              </p>
+            <div className="min-w-0 flex-1 pt-0.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="truncate text-sm font-medium text-slate-800">
+                  {activity.employee_name}
+                </p>
+                <span className="shrink-0 text-xs text-slate-500">
+                  {formatTime(activity.created_at)}
+                </span>
+              </div>
 
-              <p className="mt-0.5 text-xs capitalize text-slate-400">
+              <p className="mt-0.5 text-xs capitalize text-slate-500">
                 {getActivityLabel(activity.event_type)}
                 {activity.source ? ` · ${activity.source}` : ""}
               </p>
             </div>
-
-            <span className="shrink-0 text-xs font-medium text-slate-400">
-              {formatTime(activity.created_at)}
-            </span>
-          </div>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
+/* ---------- Page ---------- */
+
 export default function DashboardPage() {
+  const { user } = useAuth();
+
   const [dashboard, setDashboard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -545,249 +839,203 @@ export default function DashboardPage() {
   const stats = dashboard?.stats || {};
   const attendance = dashboard?.attendance || {};
   const breaktime = dashboard?.breaktime || {};
+  const isInitialLoad = loading && !dashboard;
+  const overbreakCount = Number(stats.overbreak) || 0;
 
   const statCards = [
     {
-      label: "Total Employees",
+      label: "Total employees",
       value: stats.total_employees,
-      detail: "Active workforce",
+      detail: "Active RCS - RR",
       icon: Users,
-      color: "teal",
+      tone: "blue",
     },
     {
-      label: "Present Today",
+      label: "Present today",
       value: stats.present,
       detail: "Present, late and half day",
       icon: UserCheck,
-      color: "green",
+      tone: "blue",
     },
     {
-      label: "Absent Today",
-      value: stats.absent,
-      detail: "Recorded absent",
-      icon: UserX,
-      color: "red",
-    },
-    {
-      label: "No Attendance",
-      value: stats.no_attendance,
-      detail: "Awaiting attendance record",
-      icon: Clock3,
-      color: "amber",
-    },
-    {
-      label: "Currently On Break",
+      label: "On break",
       value: stats.on_break,
       detail: "Active break sessions",
       icon: Coffee,
-      color: "blue",
+      tone: "blue",
+    },
+    {
+      label: "No attendance",
+      value: stats.no_attendance,
+      detail: "Awaiting record",
+      icon: Clock3,
+      tone: "blue",
+    },
+    {
+      label: "Absent today",
+      value: stats.absent,
+      detail: "Recorded absent",
+      icon: UserX,
+      tone: "red",
     },
     {
       label: "Overbreak",
       value: stats.overbreak,
-      detail: "Exceeded allowed duration",
+      detail: "Exceeded allowed time",
       icon: AlertTriangle,
-      color: "red",
+      tone: "red",
     },
   ];
 
   return (
-    <div className="space-y-7 pb-8">
-      {/* Page heading */}
-      <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <p className="text-xs font-semibold tracking-[0.14em] text-teal-700">
-              WORKFORCE OVERVIEW
-            </p>
-          </div>
+    <div className="space-y-6 pb-8">
+      <Header
+        today={today}
+        refreshing={refreshing}
+        onRefresh={() => loadDashboard(true)}
+      />
 
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
-            Dashboard
-          </h1>
-
-          <p className="mt-1 text-sm text-slate-500">
-            Your warehouse workforce at a glance.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-600">
-            <CalendarDays size={16} className="text-teal-600" />
-            <span>{today}</span>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => loadDashboard(true)}
-            disabled={refreshing}
-            className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-            Refresh
-          </button>
-        </div>
-      </section>
-
-      {/* Error */}
       {error && (
-        <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
-          <ShieldAlert className="mt-0.5 shrink-0 text-rose-600" size={19} />
+        <div className="flex items-start gap-3 rounded-xl border border-[#F5C2CA] bg-[#FDECEF] px-4 py-3">
+          <ShieldAlert className="mt-0.5 shrink-0 text-[#C8102E]" size={19} />
 
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold text-rose-800">
+            <p className="text-sm font-semibold text-[#8E0B20]">
               Unable to update dashboard
             </p>
-            <p className="mt-1 text-sm text-rose-700">{error}</p>
+            <p className="mt-1 text-sm text-[#A80D26]">{error}</p>
           </div>
 
           <button
             type="button"
             onClick={() => loadDashboard(true)}
-            className="shrink-0 text-xs font-semibold text-rose-700 hover:underline"
+            className="shrink-0 text-xs font-semibold text-[#C8102E] hover:underline"
           >
             Retry
           </button>
         </div>
       )}
 
-      {/* Statistics */}
-      <section>
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-800">
-              Today's Overview
+      {/* Attention strip: only appears when something needs action */}
+      {!error && overbreakCount > 0 && (
+        <div className="flex items-center gap-3 rounded-xl border border-[#F5C2CA] bg-[#FDECEF] px-4 py-3">
+          <AlertTriangle className="shrink-0 text-[#C8102E]" size={18} />
+          <p className="text-sm font-medium text-[#8E0B20]">
+            {overbreakCount}{" "}
+            {overbreakCount === 1 ? "employee is" : "employees are"} over their
+            break time right now.
+          </p>
+        </div>
+      )}
+
+      {/* Hero row: attendance ring + KPI grid */}
+      <section
+        aria-label="Today's overview"
+        className="grid gap-5 xl:grid-cols-3"
+      >
+        <AttendanceRing stats={stats} loading={isInitialLoad} />
+
+        <div className="xl:col-span-2">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-base font-semibold text-[#0B3A8C]">
+              Today's overview
             </h2>
-            <p className="mt-0.5 text-xs text-slate-400">
-              Workforce and attendance statistics
-            </p>
+
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+              <span
+                className={`h-1.5 w-1.5 rounded-full bg-[#1D63D6] ${
+                  refreshing ? "animate-pulse" : ""
+                }`}
+              />
+              {refreshing ? "Updating..." : "Updates every 30 seconds"}
+            </span>
           </div>
 
-          <span className="text-xs text-slate-400">
-            {refreshing ? "Updating..." : "Auto-refresh: 30 seconds"}
-          </span>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {statCards.map((item) => (
-            <StatCard
-              key={item.label}
-              item={item}
-              {...item}
-              loading={loading && !dashboard}
-            />
-          ))}
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
+            {statCards.map((item) => (
+              <StatCard key={item.label} {...item} loading={isInitialLoad} />
+            ))}
+          </div>
         </div>
       </section>
 
-      {/* Attendance and department */}
-      <section className="grid gap-5 xl:grid-cols-2">
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/30 sm:p-6">
+      <QuickLinks role={user?.role} />
+
+      {/* Attendance breakdown (narrow) + Departments (wide) */}
+      <section className="grid gap-5 xl:grid-cols-5">
+        <Card className="xl:col-span-2">
           <SectionHeading
-            title="Attendance Overview"
-            description="Today's employee attendance breakdown"
-            icon={UserCheck}
+            title="Attendance breakdown"
+            description="How today's RCS - RR is split"
           />
 
           <AttendanceBreakdown
             attendance={attendance}
-            loading={loading && !dashboard}
+            loading={isInitialLoad}
           />
+        </Card>
 
-          <div className="mt-6 grid grid-cols-2 gap-3 border-t border-slate-100 pt-5">
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="text-xs text-slate-500">Rest Day</p>
-              <p className="mt-1 text-xl font-semibold text-slate-800">
-                {loading && !dashboard ? "—" : attendance.rest_day || 0}
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="text-xs text-slate-500">Holiday</p>
-              <p className="mt-1 text-xl font-semibold text-slate-800">
-                {loading && !dashboard ? "—" : attendance.holiday || 0}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/30 sm:p-6">
+        <Card className="xl:col-span-3">
           <SectionHeading
-            title="Department Summary"
-            description="Attendance distribution by department"
-            icon={Users}
+            title="Department summary"
+            description="Headcount and attendance per department"
           />
 
           <DepartmentSummary
             departments={dashboard?.departments || []}
-            loading={loading && !dashboard}
+            loading={isInitialLoad}
           />
-        </div>
+        </Card>
       </section>
 
-      {/* Breaktime and activities */}
-      <section className="grid gap-5 xl:grid-cols-2">
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/30 sm:p-6">
+      {/* Breaktime (wide) + Activities (narrow) */}
+      <section className="grid gap-5 xl:grid-cols-5">
+        <Card className="xl:col-span-3">
           <SectionHeading
-            title="Breaktime Monitoring"
-            description="Employees currently taking breaks"
-            icon={Coffee}
+            title="Breaktime monitoring"
+            description="Overbreak shown first"
             action={
-              <div className="flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700">
-                <AlertTriangle size={12} />
-                {loading ? "—" : breaktime.overbreak || 0} Overbreak
+              <div className="flex shrink-0 items-center gap-2 text-xs">
+                <span className="rounded-full bg-[#EAF1FD] px-2.5 py-1 font-semibold text-[#1D63D6]">
+                  {isInitialLoad ? "—" : breaktime.on_break || 0} on break
+                </span>
+                <span className="rounded-full bg-[#FDECEF] px-2.5 py-1 font-semibold text-[#C8102E]">
+                  {isInitialLoad ? "—" : breaktime.overbreak || 0} overbreak
+                </span>
               </div>
             }
           />
 
           <BreaktimePanel
             employees={breaktime.employees || []}
-            loading={loading && !dashboard}
+            loading={isInitialLoad}
           />
+        </Card>
 
-          <div className="mt-5 grid grid-cols-2 gap-3 border-t border-slate-100 pt-5">
-            <div>
-              <p className="text-xs text-slate-400">Active breaks</p>
-              <p className="mt-1 text-xl font-semibold text-slate-800">
-                {loading && !dashboard ? "—" : breaktime.on_break || 0}
-              </p>
-            </div>
-
-            <div>
-              <p className="text-xs text-slate-400">Overbreak employees</p>
-              <p className="mt-1 text-xl font-semibold text-rose-600">
-                {loading && !dashboard ? "—" : breaktime.overbreak || 0}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/30 sm:p-6">
+        <Card className="xl:col-span-2">
           <SectionHeading
-            title="Recent Activities"
-            description="Latest recorded attendance and break events"
-            icon={Activity}
+            title="Recent activities"
+            description="Latest attendance and break events"
           />
 
           <RecentActivities
             activities={dashboard?.recent_activities || []}
-            loading={loading && !dashboard}
+            loading={isInitialLoad}
           />
-        </div>
+        </Card>
       </section>
 
       {/* Footer */}
-      <div className="flex flex-col gap-2 border-t border-slate-200/70 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs text-slate-400">
-          Warehouse Workforce Management System
+      <footer className="flex flex-col gap-2 border-t border-[#E3EAF5] pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <p className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="h-3 w-1 rounded-sm bg-[#C8102E]" />
+          {BRAND.systemName} System
         </p>
 
-        <p className="flex items-center gap-1.5 text-xs text-slate-400">
-          <Zap size={13} className="text-teal-600" />
+        <p className="text-xs text-slate-500">
           All dates and times follow Asia/Manila
         </p>
-      </div>
+      </footer>
     </div>
   );
 }

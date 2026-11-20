@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Activity,
-  AlertCircle,
   AlertTriangle,
   Check,
   CheckCircle2,
@@ -15,27 +14,47 @@ import {
   Square,
   Users,
   X,
-  XCircle,
 } from "lucide-react";
 
 import { api, getApiError } from "../../lib/api";
 
 const REFRESH_INTERVAL = 15000;
+const TIME_ZONE = "Asia/Manila";
+
+/**
+ * Brand palette (same as Dashboard): white + blue + red, grays for neutrals.
+ *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
+ *   Red  #C8102E · Light red #FDECEF · Soft red #EE8696 · Border #E3EAF5
+ *
+ * Break states:  normal = blue · near limit = soft red · overbreak = solid red
+ */
+
+/* ---------- Helpers ---------- */
 
 function getManilaDate() {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Manila",
+    timeZone: TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
 }
 
+function formatLongDate(date) {
+  return new Date(`${date}T12:00:00+08:00`).toLocaleDateString("en-PH", {
+    timeZone: TIME_ZONE,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 function formatTime(value) {
   if (!value) return "—";
 
   return new Intl.DateTimeFormat("en-PH", {
-    timeZone: "Asia/Manila",
+    timeZone: TIME_ZONE,
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
@@ -71,6 +90,14 @@ function getEmployeeName(employee) {
   return [employee?.first_name, employee?.middle_name, employee?.last_name]
     .filter(Boolean)
     .join(" ");
+}
+
+function getInitials(employee) {
+  return (
+    `${(employee?.first_name || "")[0] || ""}${
+      (employee?.last_name || "")[0] || ""
+    }`.toUpperCase() || "?"
+  );
 }
 
 function getErrorMessage(error, fallback) {
@@ -129,79 +156,90 @@ function getBreakInfo(activeBreak, now) {
   };
 }
 
-function StatCard({ label, value, description, icon: Icon, tone = "default" }) {
+/* ---------- Building blocks ---------- */
+
+function StatCard({ label, value, description, icon: Icon, tone, loading }) {
   const tones = {
-    default: "bg-slate-100 text-slate-600",
-    green: "bg-emerald-50 text-emerald-600",
-    amber: "bg-amber-50 text-amber-600",
-    red: "bg-red-50 text-red-600",
-    teal: "bg-teal-50 text-teal-700",
+    blue: { chip: "bg-[#EAF1FD] text-[#1D63D6]", value: "text-[#0B3A8C]" },
+    soft: { chip: "bg-[#FDECEF] text-[#E0566B]", value: "text-[#E0566B]" },
+    red: { chip: "bg-[#FDECEF] text-[#C8102E]", value: "text-[#C8102E]" },
+    gray: { chip: "bg-slate-100 text-slate-500", value: "text-slate-600" },
   };
 
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
-            {value}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">{description}</p>
-        </div>
+  const t = tones[tone] || tones.blue;
 
-        <div className={`rounded-xl p-3 ${tones[tone]}`}>
-          <Icon size={21} />
+  return (
+    <div className="rounded-2xl border border-[#E3EAF5] bg-white p-4 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-medium text-slate-600">{label}</p>
+        <div className={`shrink-0 rounded-lg p-2 ${t.chip}`}>
+          <Icon size={16} strokeWidth={2} />
         </div>
       </div>
+
+      <p className={`mt-3 text-3xl font-semibold tracking-tight ${t.value}`}>
+        {loading ? "—" : value}
+      </p>
+
+      <p className="mt-1 text-xs text-slate-500">{description}</p>
     </div>
   );
 }
 
-function BreakTimer({ activeBreak, now }) {
-  const info = getBreakInfo(activeBreak, now);
+function Alert({ tone, icon: Icon, children, onDismiss }) {
+  const styles =
+    tone === "red"
+      ? "border-[#F5C2CA] bg-[#FDECEF] text-[#8E0B20]"
+      : "border-[#CFE0FA] bg-[#EAF1FD] text-[#0B3A8C]";
 
-  if (!info) return null;
-
-  let colorClass = "text-emerald-600";
-  let barClass = "bg-emerald-500";
-  let statusText = `${formatDuration(info.remainingSeconds)} remaining`;
-
-  if (info.isExceeded) {
-    colorClass = "text-red-600";
-    barClass = "bg-red-500";
-    statusText = `Overbreak by ${formatDuration(info.excessSeconds)}`;
-  } else if (info.isNearLimit) {
-    colorClass = "text-amber-600";
-    barClass = "bg-amber-500";
-    statusText = "Approaching break limit";
-  }
+  const iconColor = tone === "red" ? "text-[#C8102E]" : "text-[#1D63D6]";
 
   return (
-    <div className="min-w-0">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className={`text-xl font-bold tabular-nums ${colorClass}`}>
-            {formatDuration(info.elapsedSeconds)}
-          </p>
-          <p className="mt-0.5 text-xs text-slate-500">Elapsed time</p>
-        </div>
+    <div
+      role={tone === "red" ? "alert" : "status"}
+      className={`flex items-start gap-3 rounded-xl border px-4 py-3 text-sm font-medium ${styles}`}
+    >
+      <Icon size={18} className={`mt-0.5 shrink-0 ${iconColor}`} />
+      <p className="min-w-0 flex-1">{children}</p>
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 rounded p-0.5 opacity-60 transition hover:opacity-100"
+        >
+          <X size={15} />
+        </button>
+      )}
+    </div>
+  );
+}
 
-        <div className="text-right">
-          <p className="text-sm font-semibold text-slate-700">
-            {activeBreak?.allowed_duration_minutes || 0} min
-          </p>
-          <p className="mt-0.5 text-xs text-slate-500">Allowed</p>
-        </div>
+function Avatar({ employee, active, danger }) {
+  let cls = "bg-[#EAF1FD] text-[#1D63D6]";
+
+  if (danger) cls = "bg-[#C8102E] text-white";
+  else if (active) cls = "bg-[#1D63D6] text-white";
+
+  return (
+    <div
+      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${cls}`}
+    >
+      {getInitials(employee)}
+    </div>
+  );
+}
+
+function EmptyState({ icon: Icon, title, description }) {
+  return (
+    <div className="flex min-h-[190px] flex-col items-center justify-center px-5 text-center">
+      <div className="mb-3 rounded-2xl bg-[#EAF1FD] p-4 text-[#1D63D6]">
+        <Icon size={25} strokeWidth={1.7} />
       </div>
-
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${barClass}`}
-          style={{ width: `${info.progress}%` }}
-        />
-      </div>
-
-      <p className={`mt-2 text-xs font-semibold ${colorClass}`}>{statusText}</p>
+      <p className="text-sm font-medium text-slate-700">{title}</p>
+      <p className="mt-1 max-w-xs text-xs leading-5 text-slate-500">
+        {description}
+      </p>
     </div>
   );
 }
@@ -209,8 +247,8 @@ function BreakTimer({ activeBreak, now }) {
 function StatusBadge({ activeBreak, now }) {
   if (!activeBreak) {
     return (
-      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-        Not on Break
+      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
+        Not on break
       </span>
     );
   }
@@ -219,8 +257,8 @@ function StatusBadge({ activeBreak, now }) {
 
   if (info.isExceeded) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700">
-        <AlertTriangle size={12} />
+      <span className="inline-flex items-center gap-1 rounded-full bg-[#C8102E] px-2.5 py-1 text-xs font-semibold text-white">
+        <AlertTriangle size={11} />
         Overbreak
       </span>
     );
@@ -228,18 +266,343 @@ function StatusBadge({ activeBreak, now }) {
 
   if (info.isNearLimit) {
     return (
-      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
-        Near Limit
+      <span className="inline-flex items-center gap-1 rounded-full border border-[#F5C2CA] bg-[#FDECEF] px-2.5 py-1 text-xs font-semibold text-[#C8102E]">
+        <Clock3 size={11} />
+        Near limit
       </span>
     );
   }
 
   return (
-    <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-      On Break
+    <span className="inline-flex items-center gap-1 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
+      <Coffee size={11} />
+      On break
     </span>
   );
 }
+
+function BreakTimer({ activeBreak, now, compact = false }) {
+  const info = getBreakInfo(activeBreak, now);
+
+  if (!info) return null;
+
+  let colorClass = "text-[#1D63D6]";
+  let barColor = "#1D63D6";
+  let statusText = `${formatDuration(info.remainingSeconds)} remaining`;
+
+  if (info.isExceeded) {
+    colorClass = "text-[#C8102E]";
+    barColor = "#C8102E";
+    statusText = `Overbreak by ${formatDuration(info.excessSeconds)}`;
+  } else if (info.isNearLimit) {
+    colorClass = "text-[#C8102E]";
+    barColor = "#EE8696";
+    statusText = `Near limit · ${formatDuration(info.remainingSeconds)} left`;
+  }
+
+  return (
+    <div className="min-w-0">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p
+            className={`font-semibold tabular-nums ${colorClass} ${
+              compact ? "text-base" : "text-2xl"
+            }`}
+          >
+            {formatDuration(info.elapsedSeconds)}
+          </p>
+          {!compact && <p className="mt-0.5 text-xs text-slate-500">Elapsed</p>}
+        </div>
+
+        <div className="text-right">
+          <p className="text-sm font-semibold text-slate-700">
+            {activeBreak?.allowed_duration_minutes || 0} min
+          </p>
+          {!compact && <p className="mt-0.5 text-xs text-slate-500">Allowed</p>}
+        </div>
+      </div>
+
+      <div className="mt-2.5 h-2 overflow-hidden rounded-full bg-[#EEF3FB]">
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${info.progress}%`, backgroundColor: barColor }}
+        />
+      </div>
+
+      <p className={`mt-1.5 text-xs font-semibold ${colorClass}`}>
+        {statusText}
+      </p>
+    </div>
+  );
+}
+
+function ActiveBreakCard({
+  activeBreak,
+  employee,
+  now,
+  onEnd,
+  busy,
+  disabled,
+}) {
+  const info = getBreakInfo(activeBreak, now);
+
+  const name = employee
+    ? getEmployeeName(employee)
+    : `${activeBreak.first_name || ""} ${activeBreak.last_name || ""}`.trim();
+
+  const avatarSource = employee || {
+    first_name: activeBreak.first_name,
+    last_name: activeBreak.last_name,
+  };
+
+  let surface = "border-[#E3EAF5] bg-white";
+  if (info.isExceeded) surface = "border-[#F5C2CA] bg-[#FDECEF]/60";
+  else if (info.isNearLimit) surface = "border-[#F5C2CA] bg-white";
+
+  return (
+    <div className={`rounded-xl border p-4 ${surface}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar employee={avatarSource} danger={info.isExceeded} />
+
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+              {name || "Employee"}
+            </p>
+            <p className="mt-0.5 truncate text-xs text-slate-500">
+              {activeBreak.employee_number || employee?.employee_number || "—"}
+              {" · "}
+              {activeBreak.department_name ||
+                employee?.department_name ||
+                "No department"}
+            </p>
+          </div>
+        </div>
+
+        <StatusBadge activeBreak={activeBreak} now={now} />
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500">
+        <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
+          <Coffee size={13} />
+          {activeBreak.break_name || "Break"}
+        </span>
+        <span>Started {formatTime(activeBreak.actual_start_at)}</span>
+      </div>
+
+      <div className="mt-3">
+        <BreakTimer activeBreak={activeBreak} now={now} />
+      </div>
+
+      {employee && (
+        <div className="mt-4 flex justify-end border-t border-[#EEF3FB] pt-3">
+          <button
+            type="button"
+            onClick={() => onEnd(employee)}
+            disabled={disabled}
+            className="inline-flex items-center gap-2 rounded-lg bg-[#0B3A8C] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:opacity-60"
+          >
+            {busy ? (
+              <LoaderCircle size={14} className="animate-spin" />
+            ) : (
+              <Square size={13} />
+            )}
+            End break
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkeletonCards() {
+  return (
+    <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-2">
+      {[1, 2].map((item) => (
+        <div
+          key={item}
+          className="h-44 animate-pulse rounded-xl bg-[#F4F8FE]"
+        />
+      ))}
+    </div>
+  );
+}
+
+function SkeletonRows() {
+  return (
+    <div className="divide-y divide-[#EEF3FB]">
+      {[1, 2, 3, 4, 5].map((item) => (
+        <div key={item} className="flex animate-pulse items-center gap-4 p-5">
+          <div className="h-4 w-4 rounded bg-[#EEF3FB]" />
+          <div className="h-10 w-10 rounded-full bg-[#EEF3FB]" />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 w-44 rounded bg-[#EEF3FB]" />
+            <div className="h-3 w-28 rounded bg-[#EEF3FB]" />
+          </div>
+          <div className="hidden h-10 w-64 rounded-xl bg-[#EEF3FB] lg:block" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Roster row ---------- */
+
+function RosterRow({
+  employee,
+  activeBreak,
+  now,
+  selected,
+  onToggle,
+  scheduleId,
+  onScheduleChange,
+  onStart,
+  onEnd,
+  busy,
+  bulkLoading,
+}) {
+  const availableSchedules = getAvailableSchedules(employee);
+  const info = getBreakInfo(activeBreak, now);
+  const canStart = !activeBreak && availableSchedules.length > 0;
+  const name = getEmployeeName(employee);
+
+  let surface = selected ? "bg-[#F7FAFE]" : "bg-white hover:bg-[#F7FAFE]";
+  if (info?.isExceeded) {
+    surface = "bg-[#FDECEF]/40 shadow-[inset_3px_0_0_0_#C8102E]";
+  }
+
+  return (
+    <li
+      className={`flex flex-col gap-4 px-4 py-4 transition sm:px-5 xl:flex-row xl:items-center xl:justify-between ${surface}`}
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(employee.id)}
+          disabled={bulkLoading}
+          aria-label={`Select ${name}`}
+          className="mt-3 h-4 w-4 shrink-0 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
+        />
+
+        <Avatar
+          employee={employee}
+          active={selected}
+          danger={Boolean(info?.isExceeded)}
+        />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+              {name || "Unnamed employee"}
+            </p>
+            <StatusBadge activeBreak={activeBreak} now={now} />
+          </div>
+
+          <p className="mt-0.5 text-xs text-slate-500">
+            {employee.employee_number || "No employee number"}
+            {" · "}
+            {employee.department_name || "No department"}
+            {employee.position_name ? ` · ${employee.position_name}` : ""}
+          </p>
+
+          {activeBreak && (
+            <div className="mt-3 max-w-sm">
+              <p className="mb-1.5 text-xs font-medium text-slate-600">
+                {activeBreak.break_name || "Break"} · Started{" "}
+                {formatTime(activeBreak.actual_start_at)}
+              </p>
+              <BreakTimer activeBreak={activeBreak} now={now} compact />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto xl:min-w-[400px] xl:justify-end">
+        {activeBreak ? (
+          <button
+            type="button"
+            onClick={() => onEnd(employee)}
+            disabled={busy || bulkLoading}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0B3A8C] px-4 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:opacity-60"
+          >
+            {busy ? (
+              <LoaderCircle size={15} className="animate-spin" />
+            ) : (
+              <Square size={13} />
+            )}
+            End break
+          </button>
+        ) : (
+          <>
+            <select
+              value={scheduleId || ""}
+              onChange={(event) =>
+                onScheduleChange(employee.id, event.target.value)
+              }
+              disabled={!canStart || busy || bulkLoading}
+              aria-label={`Break schedule for ${name}`}
+              className="h-10 min-w-0 flex-1 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD] disabled:bg-slate-50 disabled:text-slate-400"
+            >
+              <option value="">
+                {availableSchedules.length
+                  ? "Select break schedule"
+                  : "No available schedule"}
+              </option>
+
+              {availableSchedules.map((schedule) => {
+                const count = getScheduleCount(
+                  employee.break_records,
+                  schedule.id,
+                );
+
+                const reached =
+                  schedule.max_occurrences_per_shift != null &&
+                  count >= Number(schedule.max_occurrences_per_shift);
+
+                return (
+                  <option
+                    key={schedule.id}
+                    value={schedule.id}
+                    disabled={reached}
+                  >
+                    {getScheduleLabel(schedule)} · {schedule.duration_minutes}{" "}
+                    min
+                    {schedule.break_type?.is_paid ? " · Paid" : " · Unpaid"}
+                    {reached ? " · Limit reached" : ""}
+                  </option>
+                );
+              })}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => onStart(employee)}
+              disabled={busy || bulkLoading || !scheduleId}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              {busy ? (
+                <LoaderCircle size={15} className="animate-spin" />
+              ) : (
+                <Play size={14} />
+              )}
+              Start break
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/* ---------- Page ---------- */
+
+const STATUS_TABS = [
+  { key: "all", label: "All" },
+  { key: "available", label: "Not on break" },
+  { key: "active", label: "On break" },
+  { key: "exceeded", label: "Overbreak" },
+];
 
 export default function BreaktimeMonitoringPage() {
   const [employees, setEmployees] = useState([]);
@@ -264,6 +627,7 @@ export default function BreaktimeMonitoringPage() {
 
   const [now, setNow] = useState(Date.now());
 
+  const selectAllRef = useRef(null);
   const workDate = getManilaDate();
 
   const loadData = useCallback(
@@ -325,6 +689,8 @@ export default function BreaktimeMonitoringPage() {
     };
   }, [loadData]);
 
+  /* ----- Derived data ----- */
+
   const presentEmployees = useMemo(
     () =>
       employees.filter((employee) => employee.attendance?.status === "present"),
@@ -340,6 +706,12 @@ export default function BreaktimeMonitoringPage() {
 
     return map;
   }, [activeBreaks]);
+
+  const employeeById = useMemo(() => {
+    const map = new Map();
+    presentEmployees.forEach((employee) => map.set(employee.id, employee));
+    return map;
+  }, [presentEmployees]);
 
   const departments = useMemo(() => {
     const unique = new Map();
@@ -357,6 +729,29 @@ export default function BreaktimeMonitoringPage() {
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [presentEmployees]);
+
+  const groupSchedules = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          presentEmployees
+            .flatMap(getAvailableSchedules)
+            .map((schedule) => [schedule.id, schedule]),
+        ).values(),
+      ),
+    [presentEmployees],
+  );
+
+  /* Overbreak first, then least time remaining */
+  const sortedActiveBreaks = useMemo(
+    () =>
+      [...activeBreaks].sort(
+        (a, b) =>
+          (getBreakInfo(a, now)?.remainingSeconds ?? 0) -
+          (getBreakInfo(b, now)?.remainingSeconds ?? 0),
+      ),
+    [activeBreaks, now],
+  );
 
   const filteredEmployees = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -414,12 +809,21 @@ export default function BreaktimeMonitoringPage() {
 
   const availableCount = presentEmployees.length - onBreakCount;
 
+  const tabCounts = {
+    all: presentEmployees.length,
+    available: availableCount,
+    active: Math.max(0, onBreakCount - exceededCount),
+    exceeded: exceededCount,
+  };
+
+  const selectedSet = useMemo(
+    () => new Set(selectedEmployees),
+    [selectedEmployees],
+  );
+
   const selectedEmployeeObjects = useMemo(
-    () =>
-      presentEmployees.filter((employee) =>
-        selectedEmployees.includes(employee.id),
-      ),
-    [presentEmployees, selectedEmployees],
+    () => presentEmployees.filter((employee) => selectedSet.has(employee.id)),
+    [presentEmployees, selectedSet],
   );
 
   const selectedNotOnBreak = selectedEmployeeObjects.filter(
@@ -447,11 +851,27 @@ export default function BreaktimeMonitoringPage() {
     );
   });
 
-  const selectedVisibleIds = filteredEmployees.map((employee) => employee.id);
+  const selectedVisibleIds = useMemo(
+    () => filteredEmployees.map((employee) => employee.id),
+    [filteredEmployees],
+  );
 
   const allVisibleSelected =
     selectedVisibleIds.length > 0 &&
-    selectedVisibleIds.every((id) => selectedEmployees.includes(id));
+    selectedVisibleIds.every((id) => selectedSet.has(id));
+
+  const someVisibleSelected = selectedVisibleIds.some((id) =>
+    selectedSet.has(id),
+  );
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate =
+        someVisibleSelected && !allVisibleSelected;
+    }
+  }, [someVisibleSelected, allVisibleSelected]);
+
+  /* ----- Actions ----- */
 
   const toggleEmployee = (employeeId) => {
     setSelectedEmployees((current) =>
@@ -469,6 +889,13 @@ export default function BreaktimeMonitoringPage() {
 
       return Array.from(new Set([...current, ...selectedVisibleIds]));
     });
+  };
+
+  const setEmployeeSchedule = (employeeId, scheduleId) => {
+    setSelectedSchedules((current) => ({
+      ...current,
+      [employeeId]: scheduleId,
+    }));
   };
 
   const handleStartBreak = async (employee) => {
@@ -573,7 +1000,6 @@ export default function BreaktimeMonitoringPage() {
           : [];
 
       const succeeded = Number(data.success_count ?? data.succeeded ?? 0);
-
       const failed = Number(data.failed_count ?? data.failed ?? 0);
 
       setBulkResults({
@@ -603,98 +1029,119 @@ export default function BreaktimeMonitoringPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex min-h-[420px] items-center justify-center">
-        <div className="flex items-center gap-3 text-sm font-medium text-slate-500">
-          <LoaderCircle className="animate-spin" size={20} />
-          Loading breaktime monitoring...
-        </div>
-      </div>
-    );
-  }
+  const initialLoad = loading;
+  const selectedCount = selectedEmployees.length;
 
   return (
     <div className="space-y-6 pb-8">
-      {/* Header */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="rounded-xl bg-teal-50 p-2.5 text-teal-700">
-              <Coffee size={22} />
+      {/* ===== Header ===== */}
+      <header className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
+        <div className="flex h-1.5">
+          <div className="w-24 bg-[#C8102E]" />
+          <div className="flex-1 bg-[#1D63D6]" />
+        </div>
+
+        <div className="flex flex-col gap-5 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-4">
+            <div className="rounded-xl bg-[#EAF1FD] p-3 text-[#1D63D6]">
+              <Coffee size={24} />
             </div>
 
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              <h1 className="text-2xl font-semibold tracking-tight text-[#0B3A8C]">
                 Breaktime Monitoring
               </h1>
-              <p className="mt-1 text-sm text-slate-500">
-                Monitor breaks, manage group activities, and detect overbreaks.
+              <p className="mt-0.5 text-sm text-slate-500">
+                Monitor breaks, manage group activities and catch overbreaks.
               </p>
             </div>
           </div>
 
-          <p className="mt-3 text-xs text-slate-400">
-            Work date: {workDate} · Philippine Time
-          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] px-3.5 py-2 leading-tight">
+              <p className="text-sm font-semibold text-[#0B3A8C]">
+                {formatLongDate(workDate)}
+              </p>
+              <p className="mt-0.5 inline-flex items-center gap-1.5 text-xs text-slate-500">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full bg-[#1D63D6] ${
+                    refreshing ? "animate-pulse" : ""
+                  }`}
+                />
+                {refreshing ? "Updating..." : "Live · refreshes every 15s"}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => loadData({ silent: true })}
+              disabled={refreshing || bulkLoading}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw
+                size={15}
+                className={refreshing ? "animate-spin" : ""}
+              />
+              Refresh
+            </button>
+          </div>
         </div>
+      </header>
 
-        <button
-          type="button"
-          onClick={() => loadData({ silent: true })}
-          disabled={refreshing || bulkLoading}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-60"
-        >
-          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-          Refresh
-        </button>
-      </div>
-
-      {/* Alerts */}
+      {/* ===== Alerts ===== */}
       {error && (
-        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertCircle size={18} className="mt-0.5 shrink-0" />
-          <p className="flex-1">{error}</p>
-          <button
-            type="button"
-            onClick={() => setError("")}
-            aria-label="Dismiss error"
-          >
-            <X size={17} />
-          </button>
-        </div>
+        <Alert tone="red" icon={AlertTriangle} onDismiss={() => setError("")}>
+          {error}
+        </Alert>
       )}
 
       {success && (
-        <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
-          <p className="flex-1">{success}</p>
+        <Alert tone="blue" icon={CheckCircle2} onDismiss={() => setSuccess("")}>
+          {success}
+        </Alert>
+      )}
+
+      {!error && exceededCount > 0 && (
+        <div className="flex items-center gap-3 rounded-xl border border-[#F5C2CA] bg-[#FDECEF] px-4 py-3">
+          <AlertTriangle className="shrink-0 text-[#C8102E]" size={18} />
+          <p className="flex-1 text-sm font-medium text-[#8E0B20]">
+            {exceededCount}{" "}
+            {exceededCount === 1 ? "employee is" : "employees are"} over their
+            break time right now.
+          </p>
           <button
             type="button"
-            onClick={() => setSuccess("")}
-            aria-label="Dismiss success"
+            onClick={() => setStatusFilter("exceeded")}
+            className="shrink-0 text-xs font-semibold text-[#C8102E] hover:underline"
           >
-            <X size={17} />
+            Show them
           </button>
         </div>
       )}
 
-      {/* Summary */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <StatCard
-          label="Present Employees"
-          value={presentEmployees.length}
-          description="Marked present today"
-          icon={Users}
-          tone="teal"
-        />
+      {/* ===== Summary ===== */}
+      <section
+        aria-label="Break summary"
+        className="grid grid-cols-2 gap-4 xl:grid-cols-5"
+      >
+        <div className="col-span-2 xl:col-span-1">
+          <StatCard
+            label="Present"
+            value={presentEmployees.length}
+            description="Marked present today"
+            icon={Users}
+            tone="blue"
+            loading={initialLoad}
+          />
+        </div>
 
         <StatCard
-          label="Currently on Break"
+          label="On break"
           value={onBreakCount}
           description="Active break records"
           icon={Coffee}
-          tone="green"
+          tone="blue"
+          loading={initialLoad}
         />
 
         <StatCard
@@ -702,542 +1149,416 @@ export default function BreaktimeMonitoringPage() {
           value={availableCount}
           description="Not currently on break"
           icon={Activity}
+          tone="gray"
+          loading={initialLoad}
         />
 
         <StatCard
-          label="Near Limit"
+          label="Near limit"
           value={nearLimitCount}
-          description="Five minutes or less remaining"
+          description="5 minutes or less left"
           icon={Clock3}
-          tone="amber"
+          tone="soft"
+          loading={initialLoad}
         />
 
         <StatCard
           label="Overbreak"
           value={exceededCount}
-          description="Beyond allowed duration"
+          description="Beyond allowed time"
           icon={AlertTriangle}
           tone="red"
+          loading={initialLoad}
         />
-      </div>
+      </section>
 
-      {/* Bulk result */}
+      {/* ===== Bulk results ===== */}
       {bulkResults && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="rounded-2xl border border-[#E3EAF5] bg-white p-5 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-6">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="font-bold text-slate-900">Bulk Action Results</h2>
+            <h2 className="text-base font-semibold text-[#0B3A8C]">
+              Bulk action results
+            </h2>
             <button
               type="button"
               onClick={() => setBulkResults(null)}
-              className="text-slate-400 hover:text-slate-700"
+              aria-label="Close results"
+              className="rounded p-1 text-slate-400 hover:text-slate-700"
             >
               <X size={18} />
             </button>
           </div>
 
           <div className="mt-4 grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="text-2xl font-bold text-slate-900">
+            <div className="rounded-xl bg-[#F7FAFE] p-3">
+              <p className="text-2xl font-semibold text-[#0B3A8C]">
                 {bulkResults.total}
               </p>
               <p className="text-xs text-slate-500">Processed</p>
             </div>
 
-            <div className="rounded-xl bg-emerald-50 p-3">
-              <p className="text-2xl font-bold text-emerald-700">
+            <div className="rounded-xl bg-[#EAF1FD] p-3">
+              <p className="text-2xl font-semibold text-[#1D63D6]">
                 {bulkResults.succeeded}
               </p>
-              <p className="text-xs text-emerald-700">Successful</p>
+              <p className="text-xs text-[#1D63D6]">Successful</p>
             </div>
 
-            <div className="rounded-xl bg-red-50 p-3">
-              <p className="text-2xl font-bold text-red-700">
+            <div className="rounded-xl bg-[#FDECEF] p-3">
+              <p className="text-2xl font-semibold text-[#C8102E]">
                 {bulkResults.failed}
               </p>
-              <p className="text-xs text-red-700">Failed</p>
+              <p className="text-xs text-[#C8102E]">Failed</p>
             </div>
           </div>
 
           {bulkResults.results.length > 0 && (
-            <div className="mt-4 divide-y divide-slate-100">
-              {bulkResults.results.map((item, index) => (
-                <div
-                  key={item.employee_id || item.id || index}
-                  className="flex items-center justify-between gap-3 py-2.5 text-sm"
-                >
-                  <span className="font-medium text-slate-700">
-                    {item.employee_name ||
-                      item.employee_number ||
-                      item.employee_id ||
-                      "Employee"}
-                  </span>
+            <ul className="mt-4 divide-y divide-[#EEF3FB]">
+              {[...bulkResults.results]
+                .sort((a, b) => Number(a.success) - Number(b.success))
+                .map((item, index) => (
+                  <li
+                    key={item.employee_id || item.id || index}
+                    className="flex items-center justify-between gap-3 py-2.5 text-sm"
+                  >
+                    <span className="font-medium text-slate-700">
+                      {item.employee_name ||
+                        item.employee_number ||
+                        item.employee_id ||
+                        "Employee"}
+                    </span>
 
-                  {item.success ? (
-                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
-                      <Check size={14} />
-                      Success
-                    </span>
-                  ) : (
-                    <span className="max-w-[60%] text-right text-xs font-medium text-red-600">
-                      {item.message || item.error || "Action failed"}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
+                    {item.success ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#1D63D6]">
+                        <Check size={14} />
+                        Success
+                      </span>
+                    ) : (
+                      <span className="max-w-[60%] text-right text-xs font-medium text-[#C8102E]">
+                        {item.message || item.error || "Action failed"}
+                      </span>
+                    )}
+                  </li>
+                ))}
+            </ul>
           )}
         </section>
       )}
 
-      {/* Active breaks */}
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+      {/* ===== Active breaks ===== */}
+      <section className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
+        <div className="flex flex-col gap-2 border-b border-[#EEF3FB] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <div>
-            <h2 className="font-bold text-slate-900">Active Breaks</h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Live employee break duration and overbreak status
+            <h2 className="text-base font-semibold text-[#0B3A8C]">
+              Active breaks
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Overbreak shown first, then least time remaining
             </p>
           </div>
 
-          <span className="inline-flex w-fit items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-            {activeBreaks.length} Active
+          <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[#EAF1FD] px-3 py-1.5 text-xs font-semibold text-[#1D63D6]">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-[#1D63D6]" />
+            {activeBreaks.length} active
           </span>
         </div>
 
-        {activeBreaks.length === 0 ? (
-          <div className="flex flex-col items-center justify-center px-5 py-10 text-center">
-            <Coffee size={25} className="text-slate-400" />
-            <p className="mt-3 font-semibold text-slate-700">
-              No active breaks
-            </p>
-            <p className="mt-1 text-sm text-slate-500">
-              Employees currently on break will appear here.
-            </p>
-          </div>
+        {initialLoad ? (
+          <SkeletonCards />
+        ) : activeBreaks.length === 0 ? (
+          <EmptyState
+            icon={Coffee}
+            title="No active breaks"
+            description="Employees currently on break will appear here."
+          />
         ) : (
-          <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-2">
-            {activeBreaks.map((activeBreak) => {
-              const employee = presentEmployees.find(
-                (item) => item.id === activeBreak.employee_id,
-              );
-
-              const info = getBreakInfo(activeBreak, now);
+          <div className="grid grid-cols-1 gap-4 p-4 sm:p-5 lg:grid-cols-2">
+            {sortedActiveBreaks.map((activeBreak) => {
+              const employee = employeeById.get(activeBreak.employee_id);
 
               return (
-                <div
+                <ActiveBreakCard
                   key={activeBreak.id}
-                  className={`rounded-xl border p-4 ${
-                    info.isExceeded
-                      ? "border-red-200 bg-red-50/50"
-                      : info.isNearLimit
-                        ? "border-amber-200 bg-amber-50/40"
-                        : "border-slate-200 bg-white"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="truncate font-bold text-slate-900">
-                        {employee
-                          ? getEmployeeName(employee)
-                          : `${activeBreak.first_name || ""} ${activeBreak.last_name || ""}`.trim()}
-                      </p>
-
-                      <p className="mt-1 text-xs text-slate-500">
-                        {activeBreak.employee_number ||
-                          employee?.employee_number ||
-                          "—"}
-                        {" · "}
-                        {activeBreak.department_name ||
-                          employee?.department_name ||
-                          "No department"}
-                      </p>
-                    </div>
-
-                    <StatusBadge activeBreak={activeBreak} now={now} />
-                  </div>
-
-                  <div className="mt-4 rounded-xl bg-white/80 p-3">
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-slate-800">
-                          {activeBreak.break_name || "Break"}
-                        </p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          Started at {formatTime(activeBreak.actual_start_at)}
-                        </p>
-                      </div>
-                      <Clock3 size={19} className="text-slate-400" />
-                    </div>
-
-                    <BreakTimer activeBreak={activeBreak} now={now} />
-                  </div>
-
-                  {employee && (
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => handleEndBreak(employee)}
-                        disabled={
-                          actionEmployeeId === employee.id || bulkLoading
-                        }
-                        className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                      >
-                        {actionEmployeeId === employee.id ? (
-                          <LoaderCircle size={15} className="animate-spin" />
-                        ) : (
-                          <Square size={14} />
-                        )}
-                        End Break
-                      </button>
-                    </div>
-                  )}
-                </div>
+                  activeBreak={activeBreak}
+                  employee={employee}
+                  now={now}
+                  onEnd={handleEndBreak}
+                  busy={actionEmployeeId === activeBreak.employee_id}
+                  disabled={
+                    actionEmployeeId === activeBreak.employee_id || bulkLoading
+                  }
+                />
               );
             })}
           </div>
         )}
       </section>
 
-      {/* Employee roster */}
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-5 py-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      {/* ===== Roster ===== */}
+      <section className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
+        <div className="space-y-4 border-b border-[#EEF3FB] p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="font-bold text-slate-900">Present Employees</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Select employees to start or end breaks in bulk.
+              <h2 className="text-base font-semibold text-[#0B3A8C]">
+                Present employees
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Start or end a break per person, or select several for a group
+                action.
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <div className="relative">
-                <Search
-                  size={16}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search employee..."
-                  className="h-10 w-full rounded-xl border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100 sm:w-56"
-                />
-              </div>
-
-              <select
-                value={departmentFilter}
-                onChange={(event) => setDepartmentFilter(event.target.value)}
-                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-teal-500"
-              >
-                <option value="all">All Departments</option>
-                {departments.map((department) => (
-                  <option key={department.id} value={department.id}>
-                    {department.name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
-                className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-teal-500"
-              >
-                <option value="all">All Status</option>
-                <option value="available">Not on Break</option>
-                <option value="active">On Break</option>
-                <option value="exceeded">Overbreak</option>
-              </select>
-            </div>
+            <span className="shrink-0 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
+              {filteredEmployees.length} shown
+            </span>
           </div>
-        </div>
 
-        {/* Bulk toolbar */}
-        <div className="border-b border-slate-100 bg-slate-50/80 px-5 py-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={toggleSelectAll}
-                  disabled={filteredEmployees.length === 0 || bulkLoading}
-                  className="h-4 w-4 rounded border-slate-300 text-teal-700 focus:ring-teal-500"
-                />
-                Select All Visible
-              </label>
-
-              <span className="text-xs text-slate-500">
-                {selectedEmployees.length} selected
-              </span>
-
-              {selectedEmployees.length > 0 && (
+          <div className="grid gap-3 md:grid-cols-[1fr_240px]">
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search employee name or number..."
+                aria-label="Search employees"
+                className="h-10 w-full rounded-xl border border-[#E3EAF5] pl-10 pr-9 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+              />
+              {search && (
                 <button
                   type="button"
-                  onClick={() => setSelectedEmployees([])}
-                  className="text-xs font-semibold text-slate-500 hover:text-slate-800"
+                  onClick={() => setSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
                 >
-                  Clear selection
+                  <X size={14} />
                 </button>
               )}
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <select
-                value={bulkScheduleId}
-                onChange={(event) => setBulkScheduleId(event.target.value)}
-                disabled={bulkLoading}
-                className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-teal-500 sm:min-w-[220px]"
-              >
-                <option value="">Select group break schedule</option>
-
-                {Array.from(
-                  new Map(
-                    presentEmployees
-                      .flatMap(getAvailableSchedules)
-                      .map((schedule) => [schedule.id, schedule]),
-                  ).values(),
-                ).map((schedule) => (
-                  <option key={schedule.id} value={schedule.id}>
-                    {getScheduleLabel(schedule)} · {schedule.duration_minutes}{" "}
-                    min
-                  </option>
-                ))}
-              </select>
-
-              <button
-                type="button"
-                onClick={() => handleBulkAction("break_start")}
-                disabled={
-                  bulkLoading ||
-                  !bulkScheduleId ||
-                  eligibleStartEmployees.length === 0
-                }
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {bulkLoading ? (
-                  <LoaderCircle size={15} className="animate-spin" />
-                ) : (
-                  <Play size={15} />
-                )}
-                Start Selected ({eligibleStartEmployees.length})
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleBulkAction("break_end")}
-                disabled={bulkLoading || selectedOnBreak.length === 0}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                <Square size={14} />
-                End Selected ({selectedOnBreak.length})
-              </button>
-            </div>
+            <select
+              value={departmentFilter}
+              onChange={(event) => setDepartmentFilter(event.target.value)}
+              aria-label="Filter by department"
+              className="h-10 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+            >
+              <option value="all">All departments</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {selectedEmployees.length > 0 && (
-            <p className="mt-3 text-xs text-slate-500">
-              {selectedNotOnBreak.length} selected not on break ·{" "}
-              {selectedOnBreak.length} selected on break ·{" "}
-              {eligibleStartEmployees.length} eligible for selected start
-              schedule
-            </p>
-          )}
-        </div>
+          <div
+            role="tablist"
+            aria-label="Filter by break status"
+            className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
+          >
+            {STATUS_TABS.map((tab) => {
+              const active = statusFilter === tab.key;
+              const isDanger = tab.key === "exceeded";
 
-        {filteredEmployees.length === 0 ? (
-          <div className="flex flex-col items-center justify-center px-5 py-12 text-center">
-            <Users size={25} className="text-slate-400" />
-            <p className="mt-3 font-semibold text-slate-700">
-              No employees found
-            </p>
-            <p className="mt-1 max-w-sm text-sm text-slate-500">
-              Try changing your search or filters.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-100">
-            {filteredEmployees.map((employee) => {
-              const activeBreak = activeBreakByEmployee.get(employee.id);
-              const availableSchedules = getAvailableSchedules(employee);
-              const isSelected = selectedEmployees.includes(employee.id);
-              const isBusy = actionEmployeeId === employee.id;
-              const info = getBreakInfo(activeBreak, now);
-
-              const canStart = !activeBreak && availableSchedules.length > 0;
+              let cls =
+                "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]";
+              if (active) {
+                cls = isDanger
+                  ? "border-[#C8102E] bg-[#C8102E] text-white"
+                  : "border-[#1D63D6] bg-[#1D63D6] text-white";
+              } else if (isDanger && tabCounts.exceeded > 0) {
+                cls =
+                  "border-[#F5C2CA] bg-[#FDECEF] text-[#C8102E] hover:border-[#C8102E]";
+              }
 
               return (
-                <div
-                  key={employee.id}
-                  className={`flex flex-col gap-4 px-5 py-5 transition xl:flex-row xl:items-center xl:justify-between ${
-                    isSelected ? "bg-teal-50/40" : "bg-white"
-                  }`}
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setStatusFilter(tab.key)}
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition ${cls}`}
                 >
-                  <div className="flex min-w-0 items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleEmployee(employee.id)}
-                      disabled={bulkLoading}
-                      className="mt-3 h-4 w-4 shrink-0 rounded border-slate-300 text-teal-700 focus:ring-teal-500"
-                    />
-
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-sm font-bold text-teal-700">
-                      {employee.first_name?.[0] || "E"}
-                      {employee.last_name?.[0] || ""}
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate font-semibold text-slate-900">
-                          {getEmployeeName(employee) || "Unnamed Employee"}
-                        </p>
-                        <StatusBadge activeBreak={activeBreak} now={now} />
-                      </div>
-
-                      <p className="mt-1 text-xs text-slate-500">
-                        {employee.employee_number || "No employee number"}
-                        {" · "}
-                        {employee.department_name || "No department"}
-                      </p>
-
-                      <p className="mt-1 text-xs text-slate-400">
-                        {employee.position_name || "No position"}
-                        {employee.shift?.name
-                          ? ` · ${employee.shift.name}`
-                          : ""}
-                      </p>
-
-                      {activeBreak && (
-                        <div className="mt-3 max-w-sm rounded-xl border border-slate-100 bg-white p-3">
-                          <p className="mb-2 text-xs font-semibold text-slate-700">
-                            {activeBreak.break_name || "Break"} · Started{" "}
-                            {formatTime(activeBreak.actual_start_at)}
-                          </p>
-                          <BreakTimer activeBreak={activeBreak} now={now} />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto xl:min-w-[390px]">
-                    {activeBreak ? (
-                      <div className="flex flex-1 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                        <div>
-                          <p
-                            className={`text-xs font-semibold ${
-                              info?.isExceeded
-                                ? "text-red-700"
-                                : "text-slate-700"
-                            }`}
-                          >
-                            {info?.isExceeded
-                              ? `Overbreak by ${formatDuration(info.excessSeconds)}`
-                              : "Active break"}
-                          </p>
-                          <p className="mt-0.5 text-xs text-slate-500">
-                            {formatDuration(info?.elapsedSeconds || 0)} elapsed
-                          </p>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => handleEndBreak(employee)}
-                          disabled={isBusy || bulkLoading}
-                          className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-                        >
-                          {isBusy ? (
-                            <LoaderCircle size={14} className="animate-spin" />
-                          ) : (
-                            <Square size={13} />
-                          )}
-                          End Break
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <select
-                          value={selectedSchedules[employee.id] || ""}
-                          onChange={(event) =>
-                            setSelectedSchedules((current) => ({
-                              ...current,
-                              [employee.id]: event.target.value,
-                            }))
-                          }
-                          disabled={!canStart || isBusy || bulkLoading}
-                          className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-teal-500 disabled:bg-slate-50 disabled:text-slate-400"
-                        >
-                          <option value="">
-                            {availableSchedules.length
-                              ? "Select break schedule"
-                              : "No available break schedule"}
-                          </option>
-
-                          {availableSchedules.map((schedule) => {
-                            const count = getScheduleCount(
-                              employee.break_records,
-                              schedule.id,
-                            );
-
-                            const reached =
-                              schedule.max_occurrences_per_shift != null &&
-                              count >=
-                                Number(schedule.max_occurrences_per_shift);
-
-                            return (
-                              <option
-                                key={schedule.id}
-                                value={schedule.id}
-                                disabled={reached}
-                              >
-                                {getScheduleLabel(schedule)} ·{" "}
-                                {schedule.duration_minutes} min
-                                {schedule.break_type?.is_paid
-                                  ? " · Paid"
-                                  : " · Unpaid"}
-                                {reached ? " · Limit reached" : ""}
-                              </option>
-                            );
-                          })}
-                        </select>
-
-                        <button
-                          type="button"
-                          onClick={() => handleStartBreak(employee)}
-                          disabled={
-                            isBusy ||
-                            bulkLoading ||
-                            !selectedSchedules[employee.id]
-                          }
-                          className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                        >
-                          {isBusy ? (
-                            <LoaderCircle size={15} className="animate-spin" />
-                          ) : (
-                            <Play size={15} />
-                          )}
-                          Start Break
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+                  {tab.label}
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                      active ? "bg-white/20 text-white" : "bg-white/70"
+                    }`}
+                  >
+                    {initialLoad ? "—" : tabCounts[tab.key]}
+                  </span>
+                </button>
               );
             })}
           </div>
+        </div>
+
+        {/* Select-all row */}
+        <div
+          className={`flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-5 ${
+            selectedCount > 0
+              ? "border-[#CFE0FA] bg-[#EAF1FD]"
+              : "border-[#EEF3FB] bg-[#F7FAFE]"
+          }`}
+        >
+          <label className="flex cursor-pointer items-center gap-3">
+            <input
+              ref={selectAllRef}
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectAll}
+              disabled={filteredEmployees.length === 0 || bulkLoading}
+              className="h-4 w-4 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
+            />
+            <span className="text-sm font-semibold text-[#0B3A8C]">
+              {selectedCount > 0
+                ? `${selectedCount} selected`
+                : "Select all visible"}
+            </span>
+          </label>
+
+          {selectedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedEmployees([])}
+              className="text-xs font-semibold text-[#1D63D6] hover:underline"
+            >
+              Clear selection
+            </button>
+          )}
+        </div>
+
+        {/* Rows */}
+        {initialLoad ? (
+          <SkeletonRows />
+        ) : filteredEmployees.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title={
+              presentEmployees.length === 0
+                ? "No present employees"
+                : "No employees match your filters"
+            }
+            description={
+              presentEmployees.length === 0
+                ? "Employees marked present today will appear here."
+                : "Try a different search, department or status."
+            }
+          />
+        ) : (
+          <ul className="divide-y divide-[#EEF3FB]">
+            {filteredEmployees.map((employee) => (
+              <RosterRow
+                key={employee.id}
+                employee={employee}
+                activeBreak={activeBreakByEmployee.get(employee.id)}
+                now={now}
+                selected={selectedSet.has(employee.id)}
+                onToggle={toggleEmployee}
+                scheduleId={selectedSchedules[employee.id]}
+                onScheduleChange={setEmployeeSchedule}
+                onStart={handleStartBreak}
+                onEnd={handleEndBreak}
+                busy={actionEmployeeId === employee.id}
+                bulkLoading={bulkLoading}
+              />
+            ))}
+          </ul>
         )}
 
-        <div className="flex flex-col gap-2 border-t border-slate-100 bg-slate-50/70 px-5 py-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 border-t border-[#EEF3FB] bg-[#F7FAFE] px-5 py-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <span>
             Showing {filteredEmployees.length} of {presentEmployees.length}{" "}
             present employees
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Activity size={13} />
-            Live timer · Auto-refresh every 15 seconds
+            Live timer · auto-refresh every 15 seconds
           </span>
         </div>
       </section>
+
+      {/* ===== Sticky group-action bar ===== */}
+      {selectedCount > 0 && (
+        <div className="sticky bottom-3 z-20">
+          <div className="rounded-2xl border border-[#CFE0FA] bg-white p-4 shadow-[0_8px_24px_rgba(11,58,140,0.12)]">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-[#0B3A8C]">
+                  Group action · {selectedCount} selected
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {selectedNotOnBreak.length} not on break ·{" "}
+                  {selectedOnBreak.length} on break ·{" "}
+                  {bulkScheduleId
+                    ? `${eligibleStartEmployees.length} eligible for the chosen schedule`
+                    : "choose a schedule to start breaks"}
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={bulkScheduleId}
+                  onChange={(event) => setBulkScheduleId(event.target.value)}
+                  disabled={bulkLoading}
+                  aria-label="Group break schedule"
+                  className="h-10 min-w-0 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD] sm:min-w-[220px]"
+                >
+                  <option value="">Select group break schedule</option>
+                  {groupSchedules.map((schedule) => (
+                    <option key={schedule.id} value={schedule.id}>
+                      {getScheduleLabel(schedule)} · {schedule.duration_minutes}{" "}
+                      min
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => handleBulkAction("break_start")}
+                  disabled={
+                    bulkLoading ||
+                    !bulkScheduleId ||
+                    eligibleStartEmployees.length === 0
+                  }
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                >
+                  {bulkLoading ? (
+                    <LoaderCircle size={15} className="animate-spin" />
+                  ) : (
+                    <Play size={14} />
+                  )}
+                  Start ({eligibleStartEmployees.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleBulkAction("break_end")}
+                  disabled={bulkLoading || selectedOnBreak.length === 0}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0B3A8C] px-4 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                >
+                  <Square size={13} />
+                  End ({selectedOnBreak.length})
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedEmployees([])}
+                  disabled={bulkLoading}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#E3EAF5] bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-[#C8102E] hover:text-[#C8102E] disabled:opacity-50"
+                >
+                  <X size={14} />
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

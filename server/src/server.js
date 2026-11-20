@@ -3,7 +3,7 @@ import { env } from "./config/env.js";
 
 const server = app.listen(env.port, () => {
   console.log("--------------------------------------");
-  console.log(" Warehouse Workforce API");
+  console.log(" Warehouse RCS - RR API");
   console.log("--------------------------------------");
   console.log(` Environment: ${env.nodeEnv}`);
   console.log(` Port:        ${env.port}`);

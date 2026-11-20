@@ -40,7 +40,7 @@ app.use("/api", apiLimiter);
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "Warehouse Workforce API is running.",
+    message: "Warehouse RCS - RR API is running.",
     environment: env.nodeEnv,
     timestamp: new Date().toISOString(),
   });

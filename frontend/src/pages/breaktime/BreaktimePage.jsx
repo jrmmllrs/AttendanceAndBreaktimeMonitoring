@@ -1,27 +1,35 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlarmClock,
-  ArrowDownUp,
+  AlertCircle,
   CalendarClock,
   Check,
   CheckCircle2,
   ChevronDown,
   Clock3,
   Coffee,
-  Edit3,
-  Filter,
-  Loader2,
+  LoaderCircle,
+  Pencil,
   Plus,
+  Power,
   RefreshCw,
   Search,
-  Settings2,
-  ShieldCheck,
-  ToggleLeft,
-  ToggleRight,
-  Trash2,
   X,
 } from "lucide-react";
 import { api, getApiError } from "../../lib/api";
+
+/**
+ * Palette (same as Dashboard, Shifts, Departments and Employees):
+ * white + blue + red.
+ *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
+ *   Red #C8102E · Light red #FDECEF · Border #E3EAF5
+ *
+ * Layout (same as the other management pages):
+ *  - Summary strip on top.
+ *  - Schedules tab: schedules grouped by shift (collapsible). Active shifts
+ *    that have no break schedule appear in a red group on top.
+ *  - Break types tab: list with allowance bars.
+ *  - Sticky detail panel on the right for the selected row.
+ */
 
 const EMPTY_TYPE = {
   name: "",
@@ -40,20 +48,21 @@ const EMPTY_SCHEDULE = {
   max_occurrences_per_shift: "",
 };
 
-const cx = (...classes) => classes.filter(Boolean).join(" ");
+const STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
+/* ---------- Helpers ---------- */
 
 function formatTime(value) {
   if (!value) return "—";
 
   const [hours, minutes] = value.split(":").map(Number);
-  const date = new Date();
-  date.setHours(hours, minutes, 0, 0);
+  const period = hours >= 12 ? "PM" : "AM";
 
-  return date.toLocaleTimeString("en-PH", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, "0")} ${period}`;
 }
 
 function formatDuration(value) {
@@ -69,156 +78,808 @@ function formatDuration(value) {
 function getShiftTime(shift) {
   if (!shift) return "Shift unavailable";
 
-  return `${formatTime(shift.start_time)} – ${formatTime(
-    shift.end_time,
-  )}${shift.is_overnight ? " (+1 day)" : ""}`;
+  return `${formatTime(shift.start_time)} – ${formatTime(shift.end_time)}${
+    shift.is_overnight ? " (+1 day)" : ""
+  }`;
+}
+
+const matchesStatus = (item, status) =>
+  status === "all" || (status === "active" ? item.is_active : !item.is_active);
+
+/* ---------- Shared styles ---------- */
+
+const inputClass =
+  "h-10 w-full rounded-lg border border-[#E3EAF5] bg-white px-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-4 focus:ring-[#1D63D6]/10";
+
+const textareaClass =
+  "w-full resize-none rounded-lg border border-[#E3EAF5] bg-white px-3 py-2 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-4 focus:ring-[#1D63D6]/10";
+
+const primaryButton =
+  "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#1D63D6] px-4 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60";
+
+const secondaryButton =
+  "inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#E3EAF5] bg-white px-4 text-sm font-semibold text-slate-600 transition hover:bg-[#F7FAFE] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] disabled:opacity-50";
+
+const cardClass =
+  "rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]";
+
+/* ---------- Small components ---------- */
+
+function Ribbon({ tab = "w-24" }) {
+  return (
+    <div className="flex h-1.5">
+      <div className={`${tab} bg-[#C8102E]`} />
+      <div className="flex-1 bg-[#1D63D6]" />
+    </div>
+  );
+}
+
+function Pill({ tone = "blue", children }) {
+  const tones = {
+    blue: "bg-[#EAF1FD] text-[#1D63D6]",
+    red: "bg-[#FDECEF] text-[#C8102E]",
+    gray: "bg-slate-100 text-slate-500",
+  };
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${tones[tone]}`}
+    >
+      {children}
+    </span>
+  );
 }
 
 function StatusBadge({ active }) {
   return (
-    <span
-      className={cx(
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold",
-        active
-          ? "bg-emerald-50 text-emerald-700"
-          : "bg-slate-100 text-slate-500",
-      )}
-    >
-      <span
-        className={cx(
-          "h-1.5 w-1.5 rounded-full",
-          active ? "bg-emerald-500" : "bg-slate-400",
-        )}
-      />
+    <Pill tone={active ? "blue" : "gray"}>
       {active ? "Active" : "Inactive"}
-    </span>
+    </Pill>
   );
 }
 
 function PaidBadge({ paid }) {
+  return <Pill tone={paid ? "blue" : "gray"}>{paid ? "Paid" : "Unpaid"}</Pill>;
+}
+
+function Field({ label, hint, required, children }) {
   return (
-    <span
-      className={cx(
-        "inline-flex rounded-full px-2.5 py-1 text-xs font-semibold",
-        paid ? "bg-sky-50 text-sky-700" : "bg-amber-50 text-amber-700",
-      )}
-    >
-      {paid ? "Paid" : "Unpaid"}
-    </span>
+    <div className="min-w-0">
+      <label className="mb-1.5 block text-xs font-semibold text-slate-600">
+        {label}
+        {required && <span className="ml-1 text-[#C8102E]">*</span>}
+      </label>
+      {children}
+      {hint && <p className="mt-1.5 text-xs text-slate-500">{hint}</p>}
+    </div>
   );
 }
 
-function Modal({ title, description, onClose, children, wide = false }) {
+function ErrorBox({ children }) {
+  return (
+    <div className="whitespace-pre-line rounded-lg border border-[#F5C2CA] bg-[#FDECEF] px-4 py-3 text-sm text-[#8E0B20]">
+      {children}
+    </div>
+  );
+}
+
+function Modal({ title, subtitle, onClose, children, width = "max-w-lg" }) {
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-3 backdrop-blur-[2px] sm:p-5"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-[#0B3A8C]/40 p-4 backdrop-blur-[2px]"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
     >
       <div
-        className={cx(
-          "flex max-h-[92vh] w-full flex-col overflow-hidden rounded-2xl bg-white shadow-2xl",
-          wide ? "max-w-2xl" : "max-w-lg",
-        )}
+        className={`my-auto w-full ${width} overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-2xl shadow-[#0B3A8C]/20`}
       >
-        <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
+        <Ribbon tab="w-20" />
+
+        <div className="flex items-start justify-between border-b border-[#EEF3FB] px-6 py-5">
           <div>
-            <h2 className="text-lg font-bold tracking-tight text-slate-900">
-              {title}
-            </h2>
-            {description && (
-              <p className="mt-1 text-sm text-slate-500">{description}</p>
+            <h2 className="text-lg font-semibold text-[#0B3A8C]">{title}</h2>
+            {subtitle && (
+              <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
             )}
           </div>
+
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            className="rounded-lg p-2 text-slate-400 transition hover:bg-[#F7FAFE] hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6]"
             aria-label="Close modal"
           >
             <X size={19} />
           </button>
         </div>
-        <div className="overflow-y-auto px-5 py-5 sm:px-6">{children}</div>
+
+        {children}
       </div>
     </div>
   );
 }
 
-function Field({ label, hint, children, required = false }) {
+function ModalFooter({ children }) {
   return (
-    <label className="block space-y-1.5">
-      <span className="text-sm font-semibold text-slate-700">
-        {label} {required && <span className="text-rose-500">*</span>}
-      </span>
+    <div className="flex flex-col-reverse gap-2 border-t border-[#EEF3FB] bg-[#F7FAFE] px-6 py-4 sm:flex-row sm:justify-end sm:gap-3">
       {children}
-      {hint && <span className="block text-xs text-slate-400">{hint}</span>}
-    </label>
+    </div>
   );
 }
 
-const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:cursor-not-allowed disabled:bg-slate-50";
-
-function PrimaryButton({ children, loading, ...props }) {
+function StatGrid({ items }) {
   return (
-    <button
-      {...props}
-      disabled={loading || props.disabled}
-      className={cx(
-        "inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 focus:outline-none focus:ring-4 focus:ring-teal-600/15 disabled:cursor-not-allowed disabled:opacity-60",
-        props.className,
-      )}
-    >
-      {loading ? <Loader2 size={16} className="animate-spin" /> : null}
-      {children}
-    </button>
+    <dl className="grid grid-cols-2 gap-3">
+      {items.map(([label, value]) => (
+        <div
+          key={label}
+          className="rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] p-3"
+        >
+          <dt className="text-xs text-slate-500">{label}</dt>
+          <dd className="mt-1 text-lg font-semibold text-[#0B3A8C]">{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
-function SecondaryButton({ children, ...props }) {
+function PanelActions({ item, onEdit, onToggle }) {
   return (
-    <button
-      {...props}
-      className={cx(
-        "inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 disabled:opacity-50",
-        props.className,
-      )}
-    >
-      {children}
-    </button>
+    <div className="flex flex-wrap gap-2 border-t border-[#EEF3FB] pt-4">
+      <button type="button" onClick={onEdit} className={primaryButton}>
+        <Pencil size={15} />
+        Edit
+      </button>
+
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`${secondaryButton} ${
+          item.is_active
+            ? "hover:border-[#F5C2CA] hover:bg-[#FDECEF] hover:text-[#C8102E]"
+            : "text-[#1D63D6]"
+        }`}
+      >
+        <Power size={15} />
+        {item.is_active ? "Deactivate" : "Activate"}
+      </button>
+    </div>
   );
 }
 
-function SummaryCard({ icon: Icon, label, value, detail, tone = "teal" }) {
-  const tones = {
-    teal: "bg-teal-50 text-teal-700",
-    blue: "bg-blue-50 text-blue-700",
-    amber: "bg-amber-50 text-amber-700",
-    violet: "bg-violet-50 text-violet-700",
-  };
+/* ---------- Detail panels ---------- */
 
+function ScheduleDetail({ schedule, onEdit, onToggle }) {
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-5">
-      <div className="flex items-start justify-between gap-3">
+    <aside className={`${cardClass} overflow-hidden xl:sticky xl:top-4`}>
+      <Ribbon tab="w-16" />
+
+      <div className="space-y-5 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="rounded-xl bg-[#EAF1FD] p-3 text-[#1D63D6]">
+              <Coffee size={21} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-semibold text-[#0B3A8C]">
+                {schedule.name}
+              </h3>
+              <p className="truncate text-xs text-slate-500">
+                {schedule.shift?.name || "Unknown shift"} ·{" "}
+                {getShiftTime(schedule.shift)}
+              </p>
+            </div>
+          </div>
+
+          <StatusBadge active={schedule.is_active} />
+        </div>
+
+        <StatGrid
+          items={[
+            ["Duration", formatDuration(schedule.duration_minutes)],
+            [
+              "Max per shift",
+              schedule.max_occurrences_per_shift
+                ? schedule.max_occurrences_per_shift
+                : "No limit",
+            ],
+            ["Display order", `#${schedule.sequence_number}`],
+            ["Department", schedule.department?.name || "All"],
+          ]}
+        />
+
+        <div className="flex items-center justify-between rounded-xl border border-[#E3EAF5] px-3.5 py-3">
+          <div>
+            <p className="text-xs text-slate-500">Break type</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-800">
+              {schedule.break_type?.name || "Unknown type"}
+            </p>
+          </div>
+          {schedule.break_type && (
+            <PaidBadge paid={schedule.break_type.is_paid} />
+          )}
+        </div>
+
+        <div className="flex gap-3 rounded-xl border border-[#D5E3F8] bg-[#F7FAFE] p-3.5">
+          <Clock3 size={17} className="mt-0.5 shrink-0 text-[#1D63D6]" />
+          <div>
+            <p className="text-sm font-semibold text-[#0B3A8C]">
+              Flexible start
+            </p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              Employees can start this break anytime while on duty. The kiosk
+              records the actual times and the system calculates any excess.
+            </p>
+          </div>
+        </div>
+
+        <PanelActions item={schedule} onEdit={onEdit} onToggle={onToggle} />
+      </div>
+    </aside>
+  );
+}
+
+function TypeDetail({ type, usedBy, onEdit, onToggle }) {
+  return (
+    <aside className={`${cardClass} overflow-hidden xl:sticky xl:top-4`}>
+      <Ribbon tab="w-16" />
+
+      <div className="space-y-5 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="rounded-xl bg-[#EAF1FD] p-3 text-[#1D63D6]">
+              <Coffee size={21} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-semibold text-[#0B3A8C]">
+                {type.name}
+              </h3>
+              <p className="text-xs text-slate-500">Break type</p>
+            </div>
+          </div>
+
+          <StatusBadge active={type.is_active} />
+        </div>
+
+        <p className="text-sm leading-6 text-slate-600">
+          {type.description || "No description provided."}
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] p-3">
+            <p className="text-xs text-slate-500">Allowed duration</p>
+            <p className="mt-1 text-lg font-semibold text-[#0B3A8C]">
+              {formatDuration(type.allowed_duration_minutes)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] p-3">
+            <p className="text-xs text-slate-500">Pay</p>
+            <div className="mt-1.5">
+              <PaidBadge paid={type.is_paid} />
+            </div>
+          </div>
+        </div>
+
         <div>
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-2xl font-bold tracking-tight text-slate-900">
-            {value}
+          <p className="mb-2 text-xs font-semibold text-slate-500">
+            Used by {usedBy.length} schedule{usedBy.length === 1 ? "" : "s"}
           </p>
-          <p className="mt-1 text-xs text-slate-400">{detail}</p>
+
+          {usedBy.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-[#D5E3F8] py-5 text-center text-sm text-slate-500">
+              Not used in any schedule yet.
+            </p>
+          ) : (
+            <ul className="max-h-48 divide-y divide-[#EEF3FB] overflow-y-auto rounded-xl border border-[#E3EAF5]">
+              {usedBy.map((schedule) => (
+                <li
+                  key={schedule.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-800">
+                      {schedule.name}
+                    </p>
+                    <p className="truncate text-xs text-slate-500">
+                      {schedule.shift?.name || "Unknown shift"}
+                    </p>
+                  </div>
+                  <StatusBadge active={schedule.is_active} />
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        <div className={cx("rounded-xl p-3", tones[tone])}>
-          <Icon size={20} />
-        </div>
+
+        <PanelActions item={type} onEdit={onEdit} onToggle={onToggle} />
       </div>
-    </div>
+    </aside>
   );
 }
+
+/* ---------- Break type form ---------- */
+
+function TypeFormModal({ type, saving, onClose, onSubmit }) {
+  const [form, setForm] = useState(() =>
+    type
+      ? {
+          name: type.name || "",
+          description: type.description || "",
+          allowed_duration_minutes: type.allowed_duration_minutes,
+          is_paid: type.is_paid,
+        }
+      : EMPTY_TYPE,
+  );
+  const [error, setError] = useState("");
+
+  const set = (name, value) => setForm((c) => ({ ...c, [name]: value }));
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setError("");
+
+    try {
+      await onSubmit({
+        ...form,
+        allowed_duration_minutes: Number(form.allowed_duration_minutes),
+      });
+    } catch (err) {
+      setError(getApiError(err));
+    }
+  }
+
+  return (
+    <Modal
+      title={type ? "Edit break type" : "Create break type"}
+      subtitle="Define the break category and its allowed duration."
+      onClose={() => {
+        if (!saving) onClose();
+      }}
+    >
+      <form onSubmit={handleSubmit}>
+        <div className="space-y-5 p-6">
+          <Field label="Break type name" required>
+            <input
+              autoFocus
+              required
+              maxLength={100}
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="e.g. Morning break"
+              className={inputClass}
+            />
+          </Field>
+
+          <Field label="Description">
+            <textarea
+              rows={3}
+              value={form.description}
+              onChange={(e) => set("description", e.target.value)}
+              placeholder="Brief description of this break type..."
+              className={textareaClass}
+            />
+          </Field>
+
+          <Field
+            label="Allowed duration (minutes)"
+            hint="The standard allowed break duration."
+            required
+          >
+            <input
+              type="number"
+              min="1"
+              step="1"
+              required
+              value={form.allowed_duration_minutes}
+              onChange={(e) => set("allowed_duration_minutes", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-[#E3EAF5] p-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Paid break</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Is this break included in paid working time?
+              </p>
+            </div>
+
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.is_paid}
+              aria-label="Paid break"
+              onClick={() => set("is_paid", !form.is_paid)}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 ${
+                form.is_paid ? "bg-[#1D63D6]" : "bg-slate-300"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${
+                  form.is_paid ? "left-[22px]" : "left-0.5"
+                }`}
+              />
+            </button>
+          </div>
+
+          {error && <ErrorBox>{error}</ErrorBox>}
+        </div>
+
+        <ModalFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className={secondaryButton}
+          >
+            Cancel
+          </button>
+          <button type="submit" disabled={saving} className={primaryButton}>
+            {saving ? (
+              <LoaderCircle size={16} className="animate-spin" />
+            ) : (
+              <Check size={16} />
+            )}
+            {type ? "Save changes" : "Create break type"}
+          </button>
+        </ModalFooter>
+      </form>
+    </Modal>
+  );
+}
+
+/* ---------- Break schedule form ---------- */
+
+function ScheduleFormModal({
+  schedule,
+  initialShiftId,
+  references,
+  saving,
+  onClose,
+  onSubmit,
+}) {
+  const [form, setForm] = useState(() => {
+    if (schedule) {
+      return {
+        name: schedule.name || "",
+        shift_id: schedule.shift_id || "",
+        break_type_id: schedule.break_type_id || "",
+        department_id: schedule.department_id || "",
+        sequence_number: schedule.sequence_number,
+        duration_minutes: schedule.duration_minutes,
+        max_occurrences_per_shift: schedule.max_occurrences_per_shift ?? "",
+      };
+    }
+
+    const firstType = references.breakTypes[0];
+
+    return {
+      ...EMPTY_SCHEDULE,
+      shift_id: initialShiftId || references.shifts[0]?.id || "",
+      break_type_id: firstType?.id || "",
+      duration_minutes: firstType?.allowed_duration_minutes || 15,
+    };
+  });
+  const [error, setError] = useState("");
+
+  const set = (name, value) => setForm((c) => ({ ...c, [name]: value }));
+
+  const selectedType = references.breakTypes.find(
+    (item) => item.id === form.break_type_id,
+  );
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setError("");
+
+    try {
+      await onSubmit({
+        ...form,
+        department_id: form.department_id || null,
+        sequence_number: Number(form.sequence_number),
+        duration_minutes: Number(form.duration_minutes),
+        max_occurrences_per_shift:
+          form.max_occurrences_per_shift === ""
+            ? null
+            : Number(form.max_occurrences_per_shift),
+      });
+    } catch (err) {
+      setError(getApiError(err));
+    }
+  }
+
+  const noShifts = references.shifts.length === 0;
+  const noTypes = references.breakTypes.length === 0;
+
+  return (
+    <Modal
+      title={schedule ? "Edit break schedule" : "Create break schedule"}
+      subtitle="Set the break allowance. Employees can start this break anytime during their shift."
+      onClose={() => {
+        if (!saving) onClose();
+      }}
+      width="max-w-2xl"
+    >
+      <form onSubmit={handleSubmit}>
+        <div className="max-h-[65vh] space-y-5 overflow-y-auto p-6">
+          <Field label="Schedule name" required>
+            <input
+              autoFocus
+              required
+              maxLength={100}
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="e.g. Morning break - Warehouse"
+              className={inputClass}
+            />
+          </Field>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Shift" required>
+              <select
+                required
+                value={form.shift_id}
+                onChange={(e) => set("shift_id", e.target.value)}
+                className={inputClass}
+              >
+                <option value="">Select shift</option>
+                {references.shifts.map((shift) => (
+                  <option key={shift.id} value={shift.id}>
+                    {shift.name} ({formatTime(shift.start_time)} –{" "}
+                    {formatTime(shift.end_time)})
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Break type" required>
+              <select
+                required
+                value={form.break_type_id}
+                onChange={(e) => {
+                  const picked = references.breakTypes.find(
+                    (item) => item.id === e.target.value,
+                  );
+
+                  setForm((c) => ({
+                    ...c,
+                    break_type_id: e.target.value,
+                    duration_minutes:
+                      picked?.allowed_duration_minutes || c.duration_minutes,
+                  }));
+                }}
+                className={inputClass}
+              >
+                <option value="">Select break type</option>
+                {references.breakTypes.map((type) => (
+                  <option key={type.id} value={type.id}>
+                    {type.name} · {type.allowed_duration_minutes} min
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <Field
+            label="Department"
+            hint="Leave empty if the schedule applies to all departments."
+          >
+            <select
+              value={form.department_id}
+              onChange={(e) => set("department_id", e.target.value)}
+              className={inputClass}
+            >
+              <option value="">All departments</option>
+              {references.departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field
+              label="Display order"
+              hint="Only used to organize the list."
+              required
+            >
+              <input
+                type="number"
+                min="1"
+                step="1"
+                required
+                value={form.sequence_number}
+                onChange={(e) => set("sequence_number", e.target.value)}
+                className={inputClass}
+              />
+            </Field>
+
+            <Field label="Max breaks per shift" hint="Blank means no limit.">
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={form.max_occurrences_per_shift}
+                onChange={(e) =>
+                  set("max_occurrences_per_shift", e.target.value)
+                }
+                placeholder="No limit"
+                className={inputClass}
+              />
+            </Field>
+
+            <Field label="Duration (minutes)" required>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                required
+                value={form.duration_minutes}
+                onChange={(e) => set("duration_minutes", e.target.value)}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+
+          {selectedType && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] px-4 py-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-500">
+                  Break type allowance
+                </p>
+                <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-[#0B3A8C]">
+                  {selectedType.allowed_duration_minutes} minutes
+                  <PaidBadge paid={selectedType.is_paid} />
+                </p>
+              </div>
+
+              {Number(form.duration_minutes) >
+                selectedType.allowed_duration_minutes && (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#C8102E]">
+                  <AlertCircle size={13} />
+                  Longer than the break type allowance
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="flex gap-3 rounded-xl border border-[#D5E3F8] bg-[#EAF1FD] p-4 text-[#0B3A8C]">
+            <Clock3 size={17} className="mt-0.5 shrink-0 text-[#1D63D6]" />
+            <div>
+              <p className="text-sm font-semibold">Flexible break rule</p>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                Employees can start this break anytime while on duty. The kiosk
+                records the actual start and end time, and the system compares
+                it with this allowance ({formatDuration(form.duration_minutes)},{" "}
+                {form.max_occurrences_per_shift
+                  ? `up to ${form.max_occurrences_per_shift} per shift`
+                  : "no count limit"}
+                ).
+              </p>
+            </div>
+          </div>
+
+          {noShifts && (
+            <ErrorBox>
+              No active shifts found. Create or activate a shift before
+              configuring break schedules.
+            </ErrorBox>
+          )}
+
+          {noTypes && (
+            <ErrorBox>
+              No active break types found. Create a break type first.
+            </ErrorBox>
+          )}
+
+          {error && <ErrorBox>{error}</ErrorBox>}
+        </div>
+
+        <ModalFooter>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className={secondaryButton}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving || noShifts || noTypes}
+            className={primaryButton}
+          >
+            {saving ? (
+              <LoaderCircle size={16} className="animate-spin" />
+            ) : (
+              <Check size={16} />
+            )}
+            {schedule ? "Save changes" : "Create schedule"}
+          </button>
+        </ModalFooter>
+      </form>
+    </Modal>
+  );
+}
+
+/* ---------- Confirm modal ---------- */
+
+function ConfirmStatusModal({ item, kind, busy, onClose, onConfirm }) {
+  const deactivating = item.is_active;
+
+  return (
+    <Modal
+      title={`${deactivating ? "Deactivate" : "Activate"} ${kind}`}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      width="max-w-md"
+    >
+      <div className="flex gap-3 p-6">
+        <div
+          className={`h-fit shrink-0 rounded-xl p-2.5 ${
+            deactivating
+              ? "bg-[#FDECEF] text-[#C8102E]"
+              : "bg-[#EAF1FD] text-[#1D63D6]"
+          }`}
+        >
+          {deactivating ? (
+            <AlertCircle size={20} />
+          ) : (
+            <CheckCircle2 size={20} />
+          )}
+        </div>
+
+        <p className="text-sm leading-6 text-slate-600">
+          {deactivating ? "Deactivate" : "Activate"}{" "}
+          <span className="font-semibold text-[#0B3A8C]">{item.name}</span>?{" "}
+          {deactivating
+            ? "It will no longer be available for new use."
+            : "It will be available again."}
+        </p>
+      </div>
+
+      <ModalFooter>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          className={secondaryButton}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy}
+          className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-5 text-sm font-semibold text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-60 ${
+            deactivating
+              ? "bg-[#C8102E] hover:bg-[#A80D26] focus-visible:ring-[#C8102E]"
+              : "bg-[#1D63D6] hover:bg-[#0B3A8C] focus-visible:ring-[#1D63D6]"
+          }`}
+        >
+          {busy && <LoaderCircle size={16} className="animate-spin" />}
+          {deactivating ? "Deactivate" : "Activate"}
+        </button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+/* ---------- Page ---------- */
 
 export default function BreaktimePage() {
-  const [activeTab, setActiveTab] = useState("schedules");
+  const [tab, setTab] = useState("schedules");
   const [breakTypes, setBreakTypes] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [references, setReferences] = useState({
@@ -233,19 +894,18 @@ export default function BreaktimePage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const [typeSearch, setTypeSearch] = useState("");
-  const [scheduleSearch, setScheduleSearch] = useState("");
-  const [typeStatus, setTypeStatus] = useState("all");
-  const [scheduleStatus, setScheduleStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("all");
   const [shiftFilter, setShiftFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
 
-  const [typeModal, setTypeModal] = useState(false);
-  const [scheduleModal, setScheduleModal] = useState(false);
-  const [editingType, setEditingType] = useState(null);
-  const [editingSchedule, setEditingSchedule] = useState(null);
-  const [typeForm, setTypeForm] = useState(EMPTY_TYPE);
-  const [scheduleForm, setScheduleForm] = useState(EMPTY_SCHEDULE);
+  const [selectedScheduleId, setSelectedScheduleId] = useState(null);
+  const [selectedTypeId, setSelectedTypeId] = useState(null);
+  const [collapsed, setCollapsed] = useState(() => new Set());
+
+  const [typeModal, setTypeModal] = useState(null); // { type } | null
+  const [scheduleModal, setScheduleModal] = useState(null); // { schedule, shiftId } | null
+  const [confirm, setConfirm] = useState(null); // { kind, item } | null
 
   const loadData = useCallback(async (showLoader = true) => {
     if (showLoader) setLoading(true);
@@ -280,6 +940,14 @@ export default function BreaktimePage() {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    if (!success) return undefined;
+    const timeout = window.setTimeout(() => setSuccess(""), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [success]);
+
+  /* ----- Derived data ----- */
+
   const activeTypes = useMemo(
     () => breakTypes.filter((item) => item.is_active),
     [breakTypes],
@@ -290,405 +958,412 @@ export default function BreaktimePage() {
     [schedules],
   );
 
-  const filteredTypes = useMemo(() => {
-    const search = typeSearch.trim().toLowerCase();
+  const coveredShiftIds = useMemo(
+    () => new Set(activeSchedules.map((item) => item.shift_id)),
+    [activeSchedules],
+  );
 
-    return breakTypes.filter((item) => {
-      const matchesSearch =
-        !search ||
-        [item.name, item.description]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-          .includes(search);
+  const uncoveredShifts = useMemo(
+    () => references.shifts.filter((shift) => !coveredShiftIds.has(shift.id)),
+    [references.shifts, coveredShiftIds],
+  );
 
-      const matchesStatus =
-        typeStatus === "all" ||
-        (typeStatus === "active" && item.is_active) ||
-        (typeStatus === "inactive" && !item.is_active);
+  const text = search.trim().toLowerCase();
 
-      return matchesSearch && matchesStatus;
+  const filteredTypes = useMemo(
+    () =>
+      breakTypes.filter(
+        (item) =>
+          (!text ||
+            [item.name, item.description]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase()
+              .includes(text)) &&
+          matchesStatus(item, status),
+      ),
+    [breakTypes, text, status],
+  );
+
+  const filteredSchedules = useMemo(
+    () =>
+      schedules.filter(
+        (item) =>
+          (!text ||
+            [
+              item.name,
+              item.shift?.name,
+              item.break_type?.name,
+              item.department?.name,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase()
+              .includes(text)) &&
+          matchesStatus(item, status) &&
+          (shiftFilter === "all" || item.shift_id === shiftFilter) &&
+          (departmentFilter === "all" ||
+            !item.department_id ||
+            item.department_id === departmentFilter),
+      ),
+    [schedules, text, status, shiftFilter, departmentFilter],
+  );
+
+  const groups = useMemo(() => {
+    const map = new Map();
+
+    filteredSchedules.forEach((item) => {
+      if (!map.has(item.shift_id)) {
+        const shift =
+          item.shift ||
+          references.shifts.find((s) => s.id === item.shift_id) ||
+          null;
+        map.set(item.shift_id, { key: item.shift_id, shift, rows: [] });
+      }
+      map.get(item.shift_id).rows.push(item);
     });
-  }, [breakTypes, typeSearch, typeStatus]);
 
-  const filteredSchedules = useMemo(() => {
-    const search = scheduleSearch.trim().toLowerCase();
+    const list = [...map.values()];
+    list.forEach((group) =>
+      group.rows.sort((a, b) => a.sequence_number - b.sequence_number),
+    );
 
-    return schedules.filter((item) => {
-      const matchesSearch =
-        !search ||
-        [
-          item.name,
-          item.shift?.name,
-          item.break_type?.name,
-          item.department?.name,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase()
-          .includes(search);
+    const position = (group) => {
+      const index = references.shifts.findIndex((s) => s.id === group.key);
+      return index === -1 ? 999 : index;
+    };
 
-      const matchesStatus =
-        scheduleStatus === "all" ||
-        (scheduleStatus === "active" && item.is_active) ||
-        (scheduleStatus === "inactive" && !item.is_active);
+    return list.sort((a, b) => position(a) - position(b));
+  }, [filteredSchedules, references.shifts]);
 
-      const matchesShift =
-        shiftFilter === "all" || item.shift_id === shiftFilter;
+  const showUncovered =
+    !text &&
+    status !== "inactive" &&
+    uncoveredShifts.some(
+      (shift) => shiftFilter === "all" || shift.id === shiftFilter,
+    );
 
-      const matchesDepartment =
-        departmentFilter === "all" ||
-        !item.department_id ||
-        item.department_id === departmentFilter;
+  const visibleUncovered = uncoveredShifts.filter(
+    (shift) => shiftFilter === "all" || shift.id === shiftFilter,
+  );
 
-      return (
-        matchesSearch && matchesStatus && matchesShift && matchesDepartment
-      );
-    });
-  }, [
-    schedules,
-    scheduleSearch,
-    scheduleStatus,
-    shiftFilter,
-    departmentFilter,
-  ]);
+  const orderedSchedules = groups.flatMap((group) => group.rows);
+  const selectedSchedule =
+    orderedSchedules.find((item) => item.id === selectedScheduleId) ||
+    orderedSchedules[0] ||
+    null;
 
-  const showSuccess = (message) => {
-    setSuccess(message);
-    window.setTimeout(() => setSuccess(""), 3500);
+  const selectedType =
+    filteredTypes.find((item) => item.id === selectedTypeId) ||
+    filteredTypes[0] ||
+    null;
+
+  const maxAllowed = Math.max(
+    1,
+    ...breakTypes.map((item) => item.allowed_duration_minutes || 0),
+  );
+
+  const hasFilters =
+    Boolean(search.trim()) ||
+    status !== "all" ||
+    (tab === "schedules" &&
+      (shiftFilter !== "all" || departmentFilter !== "all"));
+
+  const resetFilters = () => {
+    setSearch("");
+    setStatus("all");
+    setShiftFilter("all");
+    setDepartmentFilter("all");
   };
+
+  const changeTab = (next) => {
+    setTab(next);
+    resetFilters();
+  };
+
+  /* ----- Actions ----- */
 
   const refresh = () => {
     setRefreshing(true);
     loadData(false);
   };
 
-  // ---------------------------------------------------
-  // Break Type actions
-  // ---------------------------------------------------
-
-  const openCreateType = () => {
-    setEditingType(null);
-    setTypeForm(EMPTY_TYPE);
-    setError("");
-    setTypeModal(true);
-  };
-
-  const openEditType = (item) => {
-    setEditingType(item);
-    setTypeForm({
-      name: item.name || "",
-      description: item.description || "",
-      allowed_duration_minutes: item.allowed_duration_minutes,
-      is_paid: item.is_paid,
+  const toggleGroup = (key) =>
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
-    setError("");
-    setTypeModal(true);
-  };
 
-  const saveType = async (event) => {
-    event.preventDefault();
+  async function saveType(payload) {
     setSaving(true);
-    setError("");
 
     try {
-      const payload = {
-        ...typeForm,
-        allowed_duration_minutes: Number(typeForm.allowed_duration_minutes),
-      };
-
-      if (editingType) {
-        await api.patch(`/breaktime/types/${editingType.id}`, payload);
-        showSuccess("Break type updated successfully.");
+      if (typeModal?.type) {
+        await api.patch(`/breaktime/types/${typeModal.type.id}`, payload);
+        setSuccess("Break type updated successfully.");
       } else {
         await api.post("/breaktime/types", payload);
-        showSuccess("Break type created successfully.");
+        setSuccess("Break type created successfully.");
       }
 
-      setTypeModal(false);
+      setTypeModal(null);
       await loadData(false);
-    } catch (err) {
-      setError(getApiError(err));
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const toggleTypeStatus = async (item) => {
-    const action = item.is_active ? "deactivate" : "activate";
-
-    if (!window.confirm(`Are you sure you want to ${action} "${item.name}"?`)) {
-      return;
-    }
-
-    setError("");
-
-    try {
-      await api.patch(`/breaktime/types/${item.id}/status`, {
-        is_active: !item.is_active,
-      });
-
-      showSuccess(`Break type ${action}d successfully.`);
-      await loadData(false);
-    } catch (err) {
-      setError(getApiError(err));
-    }
-  };
-
-  // ---------------------------------------------------
-  // Break Schedule actions
-  // ---------------------------------------------------
-
-  const openCreateSchedule = () => {
-    setEditingSchedule(null);
-    setScheduleForm({
-      ...EMPTY_SCHEDULE,
-      shift_id: references.shifts[0]?.id || "",
-      break_type_id: references.breakTypes[0]?.id || "",
-      duration_minutes:
-        references.breakTypes[0]?.allowed_duration_minutes || 15,
-    });
-    setError("");
-    setScheduleModal(true);
-  };
-
-  const openEditSchedule = (item) => {
-    setEditingSchedule(item);
-    setScheduleForm({
-      name: item.name || "",
-      shift_id: item.shift_id || "",
-      break_type_id: item.break_type_id || "",
-      department_id: item.department_id || "",
-      sequence_number: item.sequence_number,
-      duration_minutes: item.duration_minutes,
-      max_occurrences_per_shift: item.max_occurrences_per_shift ?? "",
-    });
-    setError("");
-    setScheduleModal(true);
-  };
-
-  const selectedShift = references.shifts.find(
-    (item) => item.id === scheduleForm.shift_id,
-  );
-
-  const selectedBreakType = references.breakTypes.find(
-    (item) => item.id === scheduleForm.break_type_id,
-  );
-
-  const saveSchedule = async (event) => {
-    event.preventDefault();
+  async function saveSchedule(payload) {
     setSaving(true);
-    setError("");
 
     try {
-      const payload = {
-        ...scheduleForm,
-        department_id: scheduleForm.department_id || null,
-        sequence_number: Number(scheduleForm.sequence_number),
-        duration_minutes: Number(scheduleForm.duration_minutes),
-        max_occurrences_per_shift:
-          scheduleForm.max_occurrences_per_shift === ""
-            ? null
-            : Number(scheduleForm.max_occurrences_per_shift),
-      };
-
-      if (editingSchedule) {
-        await api.patch(`/breaktime/schedules/${editingSchedule.id}`, payload);
-        showSuccess("Break schedule updated successfully.");
+      if (scheduleModal?.schedule) {
+        await api.patch(
+          `/breaktime/schedules/${scheduleModal.schedule.id}`,
+          payload,
+        );
+        setSuccess("Break schedule updated successfully.");
       } else {
         await api.post("/breaktime/schedules", payload);
-        showSuccess("Break schedule created successfully.");
+        setSuccess("Break schedule created successfully.");
       }
 
-      setScheduleModal(false);
+      setScheduleModal(null);
+      await loadData(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function confirmStatus() {
+    if (!confirm) return;
+
+    const { kind, item } = confirm;
+    const next = !item.is_active;
+    const path = kind === "break type" ? "types" : "schedules";
+
+    setSaving(true);
+
+    try {
+      await api.patch(`/breaktime/${path}/${item.id}/status`, {
+        is_active: next,
+      });
+
+      const label = kind === "break type" ? "Break type" : "Break schedule";
+      setSuccess(
+        `${label} ${next ? "activated" : "deactivated"} successfully.`,
+      );
+      setConfirm(null);
       await loadData(false);
     } catch (err) {
+      setConfirm(null);
       setError(getApiError(err));
     } finally {
       setSaving(false);
     }
-  };
+  }
 
-  const toggleScheduleStatus = async (item) => {
-    const action = item.is_active ? "deactivate" : "activate";
+  const kpis = [
+    {
+      label: "Break types",
+      value: breakTypes.length,
+      detail: `${activeTypes.length} active`,
+    },
+    {
+      label: "Break schedules",
+      value: schedules.length,
+      detail: `${activeSchedules.length} active`,
+    },
+    {
+      label: "Shifts with breaks",
+      value: references.shifts.length - uncoveredShifts.length,
+      detail: `of ${references.shifts.length} active shifts`,
+    },
+    {
+      label: "Shifts without breaks",
+      value: uncoveredShifts.length,
+      detail: "Need a break schedule",
+      alert: uncoveredShifts.length > 0,
+    },
+  ];
 
-    if (!window.confirm(`Are you sure you want to ${action} "${item.name}"?`)) {
-      return;
-    }
-
-    setError("");
-
-    try {
-      await api.patch(`/breaktime/schedules/${item.id}/status`, {
-        is_active: !item.is_active,
-      });
-
-      showSuccess(`Break schedule ${action}d successfully.`);
-      await loadData(false);
-    } catch (err) {
-      setError(getApiError(err));
-    }
-  };
-
-  // ---------------------------------------------------
-  // Render
-  // ---------------------------------------------------
+  /* ----- Render ----- */
 
   return (
-    <div className="min-h-full space-y-6 bg-slate-50/70 p-4 sm:p-6 lg:p-8">
-      {/* Page heading */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-teal-700">
-            <Settings2 size={15} />
-            Workforce Management
+    <div className="mx-auto max-w-[1500px] space-y-6 pb-10">
+      {/* Header */}
+      <header className={`${cardClass} overflow-hidden`}>
+        <Ribbon />
+
+        <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#0B3A8C]">
+              Breaktime
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-slate-500">
+              Set break rules per shift. Employees can start their breaks at
+              different times while they are on duty.
+            </p>
           </div>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-            Breaktime Management
-          </h1>
-          <p className="mt-1.5 max-w-2xl text-sm text-slate-500">
-            Configure flexible break rules. Employees can start their breaks at
-            different times while they are on duty.
-          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={refreshing}
+              className={secondaryButton}
+            >
+              <RefreshCw
+                size={16}
+                className={refreshing ? "animate-spin" : ""}
+              />
+              Refresh
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                tab === "types"
+                  ? setTypeModal({ type: null })
+                  : setScheduleModal({ schedule: null, shiftId: "" })
+              }
+              className={primaryButton}
+            >
+              <Plus size={17} />
+              {tab === "types" ? "Add break type" : "Add schedule"}
+            </button>
+          </div>
         </div>
+      </header>
 
-        <div className="flex items-center gap-2">
-          <SecondaryButton onClick={refresh} disabled={refreshing}>
-            <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-            Refresh
-          </SecondaryButton>
+      {success && (
+        <div
+          role="status"
+          className="flex items-center gap-3 rounded-xl border border-[#D5E3F8] bg-[#EAF1FD] px-4 py-3 text-sm font-medium text-[#0B3A8C]"
+        >
+          <CheckCircle2 size={18} className="text-[#1D63D6]" />
+          {success}
+        </div>
+      )}
 
-          <PrimaryButton
-            onClick={
-              activeTab === "types" ? openCreateType : openCreateSchedule
-            }
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-[#F5C2CA] bg-[#FDECEF] px-4 py-3 text-sm text-[#8E0B20]"
+        >
+          <AlertCircle size={18} className="mt-0.5 shrink-0 text-[#C8102E]" />
+          <span className="flex-1 whitespace-pre-line">{error}</span>
+          <button
+            type="button"
+            onClick={() => setError("")}
+            aria-label="Dismiss error"
+            className="text-[#C8102E]"
           >
-            <Plus size={17} />
-            {activeTab === "types" ? "Add break type" : "Add schedule"}
-          </PrimaryButton>
-        </div>
-      </div>
-
-      {/* Alerts */}
-      {error && !typeModal && !scheduleModal && (
-        <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          <X size={17} className="mt-0.5 shrink-0" />
-          <span className="flex-1">{error}</span>
-          <button onClick={() => setError("")} aria-label="Dismiss error">
             <X size={16} />
           </button>
         </div>
       )}
 
-      {success && (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
-          <CheckCircle2 size={17} />
-          {success}
-        </div>
-      )}
-
-      {/* Summary */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard
-          icon={Coffee}
-          label="Break Types"
-          value={breakTypes.length}
-          detail="Configured break categories"
-          tone="teal"
-        />
-        <SummaryCard
-          icon={CheckCircle2}
-          label="Active Break Types"
-          value={activeTypes.length}
-          detail="Available for scheduling"
-          tone="blue"
-        />
-        <SummaryCard
-          icon={CalendarClock}
-          label="Break Schedules"
-          value={schedules.length}
-          detail="Configured shift schedules"
-          tone="violet"
-        />
-        <SummaryCard
-          icon={ShieldCheck}
-          label="Active Schedules"
-          value={activeSchedules.length}
-          detail="Currently enabled schedules"
-          tone="amber"
-        />
-      </div>
-
-      {/* Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200">
-        <div className="flex gap-1">
-          <button
-            onClick={() => setActiveTab("schedules")}
-            className={cx(
-              "relative flex items-center gap-2 px-4 py-3 text-sm font-semibold transition",
-              activeTab === "schedules"
-                ? "text-teal-700"
-                : "text-slate-500 hover:text-slate-800",
-            )}
+      {/* Summary strip */}
+      <section
+        aria-label="Summary"
+        className={`${cardClass} grid grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-[#EEF3FB]`}
+      >
+        {kpis.map(({ label, value, detail, alert }, index) => (
+          <div
+            key={label}
+            className={`p-5 ${index % 2 === 1 ? "border-l border-[#EEF3FB] lg:border-l-0" : ""} ${
+              index > 1 ? "border-t border-[#EEF3FB] lg:border-t-0" : ""
+            }`}
           >
-            <CalendarClock size={17} />
-            Break Schedules
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-              {schedules.length}
-            </span>
-            {activeTab === "schedules" && (
-              <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-teal-600" />
-            )}
-          </button>
+            <p className="text-xs font-medium text-slate-500">{label}</p>
+            <p
+              className={`mt-1 text-2xl font-semibold tracking-tight ${
+                alert ? "text-[#C8102E]" : "text-[#0B3A8C]"
+              }`}
+            >
+              {loading ? "—" : value}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-400">{detail}</p>
+          </div>
+        ))}
+      </section>
 
-          <button
-            onClick={() => setActiveTab("types")}
-            className={cx(
-              "relative flex items-center gap-2 px-4 py-3 text-sm font-semibold transition",
-              activeTab === "types"
-                ? "text-teal-700"
-                : "text-slate-500 hover:text-slate-800",
-            )}
+      {/* Tabs + filters */}
+      <section className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div
+            role="tablist"
+            aria-label="Breaktime views"
+            className="inline-flex w-fit rounded-xl border border-[#E3EAF5] bg-white p-1"
           >
-            <Coffee size={17} />
-            Break Types
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-              {breakTypes.length}
-            </span>
-            {activeTab === "types" && (
-              <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-teal-600" />
-            )}
-          </button>
-        </div>
+            {[
+              {
+                id: "schedules",
+                label: "Schedules",
+                icon: CalendarClock,
+                count: schedules.length,
+              },
+              {
+                id: "types",
+                label: "Break types",
+                icon: Coffee,
+                count: breakTypes.length,
+              },
+            ].map(({ id, label, icon: Icon, count }) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => changeTab(id)}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
+                  tab === id
+                    ? "bg-[#1D63D6] text-white"
+                    : "text-slate-600 hover:bg-[#F7FAFE] hover:text-[#1D63D6]"
+                }`}
+              >
+                <Icon size={16} />
+                {label}
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[11px] ${
+                    tab === id ? "bg-white/20" : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
 
-        <span className="pb-2 text-xs text-slate-400">
-          Changes are saved to your database
-        </span>
-      </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative sm:w-64">
+              <Search
+                size={17}
+                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={
+                  tab === "schedules"
+                    ? "Search schedule, shift, type..."
+                    : "Search break types..."
+                }
+                aria-label="Search"
+                className={`${inputClass} pl-10`}
+              />
+            </div>
 
-      {/* SCHEDULES TAB */}
-      {activeTab === "schedules" && (
-        <section className="space-y-4">
-          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-5">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-              <div className="relative min-w-0 flex-1">
-                <Search
-                  size={17}
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  value={scheduleSearch}
-                  onChange={(e) => setScheduleSearch(e.target.value)}
-                  placeholder="Search schedule, shift, break type..."
-                  className={`${inputClass} pl-10`}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:w-auto">
+            {tab === "schedules" && (
+              <>
                 <select
                   value={shiftFilter}
                   onChange={(e) => setShiftFilter(e.target.value)}
-                  className={inputClass}
+                  aria-label="Filter by shift"
+                  className={`${inputClass} sm:w-44`}
                 >
                   <option value="all">All shifts</option>
                   {references.shifts.map((shift) => (
@@ -701,7 +1376,8 @@ export default function BreaktimePage() {
                 <select
                   value={departmentFilter}
                   onChange={(e) => setDepartmentFilter(e.target.value)}
-                  className={inputClass}
+                  aria-label="Filter by department"
+                  className={`${inputClass} sm:w-44`}
                 >
                   <option value="all">All departments</option>
                   {references.departments.map((department) => (
@@ -710,729 +1386,431 @@ export default function BreaktimePage() {
                     </option>
                   ))}
                 </select>
+              </>
+            )}
 
-                <select
-                  value={scheduleStatus}
-                  onChange={(e) => setScheduleStatus(e.target.value)}
-                  className={inputClass}
-                >
-                  <option value="all">All statuses</option>
-                  <option value="active">Active only</option>
-                  <option value="inactive">Inactive only</option>
-                </select>
-              </div>
-            </div>
+            {hasFilters && (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+              >
+                <X size={13} />
+                Clear
+              </button>
+            )}
           </div>
+        </div>
 
-          <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <div className="flex flex-col justify-between gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center">
+        <div
+          className="flex gap-2 overflow-x-auto pb-0.5"
+          role="group"
+          aria-label="Filter by status"
+        >
+          {STATUS_OPTIONS.map((option) => {
+            const active = status === option.value;
+
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setStatus(option.value)}
+                aria-pressed={active}
+                className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
+                  active
+                    ? "border-[#1D63D6] bg-[#1D63D6] text-white"
+                    : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Content */}
+      {loading ? (
+        <div
+          className={`${cardClass} flex min-h-64 items-center justify-center gap-3 text-sm text-slate-500`}
+        >
+          <LoaderCircle size={20} className="animate-spin text-[#1D63D6]" />
+          Loading breaktime settings...
+        </div>
+      ) : tab === "schedules" ? (
+        orderedSchedules.length === 0 && !showUncovered ? (
+          <div className={`${cardClass} px-6 py-20 text-center`}>
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#EAF1FD] text-[#1D63D6]">
+              <CalendarClock size={27} />
+            </div>
+            <h3 className="mt-4 font-semibold text-slate-800">
+              No break schedules found
+            </h3>
+            <p className="mx-auto mt-1 max-w-sm text-sm text-slate-500">
+              {hasFilters
+                ? "Try changing your search or filters."
+                : "Create a break schedule and assign it to one of your active shifts."}
+            </p>
+            {hasFilters ? (
+              <button
+                type="button"
+                onClick={resetFilters}
+                className="mt-5 text-sm font-semibold text-[#1D63D6] hover:text-[#0B3A8C]"
+              >
+                Clear filters
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  setScheduleModal({ schedule: null, shiftId: "" })
+                }
+                className={`${primaryButton} mt-5`}
+              >
+                <Plus size={16} />
+                Create schedule
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <div className="space-y-4">
+              {/* Shifts without a break schedule */}
+              {showUncovered && (
+                <section className="overflow-hidden rounded-2xl border border-[#F5C2CA] bg-white">
+                  <div className="flex items-center gap-3 bg-[#FDECEF] px-5 py-4">
+                    <div className="rounded-lg bg-white p-2 text-[#C8102E]">
+                      <AlertCircle size={18} />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-semibold text-[#8E0B20]">
+                        Shifts without a break schedule
+                      </h2>
+                      <p className="text-xs text-[#A80D26]">
+                        Employees on these shifts have no break rule.
+                      </p>
+                    </div>
+                  </div>
+
+                  <ul className="divide-y divide-[#EEF3FB]">
+                    {visibleUncovered.map((shift) => (
+                      <li
+                        key={shift.id}
+                        className="flex items-center gap-3 px-5 py-3"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                            {shift.name}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {getShiftTime(shift)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setScheduleModal({
+                              schedule: null,
+                              shiftId: shift.id,
+                            })
+                          }
+                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+                        >
+                          Add schedule
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* Schedules grouped by shift */}
+              {groups.map((group) => {
+                const open = !collapsed.has(group.key);
+
+                return (
+                  <section
+                    key={group.key}
+                    className={`${cardClass} overflow-hidden`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.key)}
+                      aria-expanded={open}
+                      className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-[#F7FAFE] focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6]"
+                    >
+                      <div className="rounded-lg bg-[#EAF1FD] p-2 text-[#1D63D6]">
+                        <Clock3 size={17} />
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <h2 className="truncate text-sm font-semibold text-[#0B3A8C]">
+                          {group.shift?.name || "Unknown shift"}
+                        </h2>
+                        <p className="text-xs text-slate-500">
+                          {getShiftTime(group.shift)}
+                        </p>
+                      </div>
+
+                      <Pill>
+                        {group.rows.length} schedule
+                        {group.rows.length === 1 ? "" : "s"}
+                      </Pill>
+
+                      <ChevronDown
+                        size={18}
+                        className={`shrink-0 text-slate-400 transition-transform ${
+                          open ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+
+                    {open && (
+                      <ul className="divide-y divide-[#EEF3FB] border-t border-[#EEF3FB]">
+                        {group.rows.map((item) => {
+                          const isSelected = selectedSchedule?.id === item.id;
+
+                          return (
+                            <li key={item.id}>
+                              <button
+                                type="button"
+                                onClick={() => setSelectedScheduleId(item.id)}
+                                aria-pressed={isSelected}
+                                className={`grid w-full items-center gap-x-4 gap-y-1 border-l-4 px-5 py-3.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_100px] ${
+                                  isSelected
+                                    ? "border-[#1D63D6] bg-[#EAF1FD]/60"
+                                    : "border-transparent hover:bg-[#F7FAFE]"
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                                    {item.name}
+                                  </p>
+                                  <p className="truncate text-xs text-slate-500">
+                                    #{item.sequence_number} ·{" "}
+                                    {item.break_type?.name || "Unknown type"}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <p className="text-sm font-medium text-slate-700">
+                                    {formatDuration(item.duration_minutes)}
+                                  </p>
+                                  <p className="text-xs text-slate-500">
+                                    {item.max_occurrences_per_shift
+                                      ? `Max ${item.max_occurrences_per_shift} per shift`
+                                      : "No count limit"}
+                                  </p>
+                                </div>
+
+                                <p className="truncate text-sm text-slate-600">
+                                  {item.department?.name || "All departments"}
+                                </p>
+
+                                <div className="mt-1 md:mt-0 md:text-right">
+                                  <StatusBadge active={item.is_active} />
+                                </div>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
+
+              <p className="text-xs text-slate-500">
+                Showing {orderedSchedules.length} schedule
+                {orderedSchedules.length === 1 ? "" : "s"}.
+              </p>
+            </div>
+
+            {selectedSchedule && (
+              <ScheduleDetail
+                schedule={selectedSchedule}
+                onEdit={() =>
+                  setScheduleModal({ schedule: selectedSchedule, shiftId: "" })
+                }
+                onToggle={() =>
+                  setConfirm({ kind: "break schedule", item: selectedSchedule })
+                }
+              />
+            )}
+          </div>
+        )
+      ) : filteredTypes.length === 0 ? (
+        <div className={`${cardClass} px-6 py-20 text-center`}>
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#EAF1FD] text-[#1D63D6]">
+            <Coffee size={27} />
+          </div>
+          <h3 className="mt-4 font-semibold text-slate-800">
+            No break types found
+          </h3>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-slate-500">
+            {hasFilters
+              ? "Try changing your search or filters."
+              : "Add break types such as morning break, lunch break, or afternoon break."}
+          </p>
+          {hasFilters ? (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="mt-5 text-sm font-semibold text-[#1D63D6] hover:text-[#0B3A8C]"
+            >
+              Clear filters
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setTypeModal({ type: null })}
+              className={`${primaryButton} mt-5`}
+            >
+              <Plus size={16} />
+              Add break type
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <div className={`${cardClass} overflow-hidden`}>
+            <div className="flex items-center justify-between border-b border-[#EEF3FB] px-5 py-4">
               <div>
-                <h2 className="font-bold text-slate-900">
-                  Configured break schedules
+                <h2 className="text-base font-semibold text-[#0B3A8C]">
+                  Break allowances
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Employees may start these breaks anytime during their assigned
-                  shift.
+                  Select a break type to see where it is used.
                 </p>
               </div>
-              <span className="text-xs font-medium text-slate-400">
-                {filteredSchedules.length} result
-                {filteredSchedules.length === 1 ? "" : "s"}
+
+              <span className="text-xs text-slate-400">
+                {filteredTypes.length} result
+                {filteredTypes.length === 1 ? "" : "s"}
               </span>
             </div>
 
-            {loading ? (
-              <div className="flex min-h-64 items-center justify-center gap-2 text-sm text-slate-500">
-                <Loader2 size={19} className="animate-spin text-teal-700" />
-                Loading break schedules...
-              </div>
-            ) : filteredSchedules.length === 0 ? (
-              <div className="flex min-h-64 flex-col items-center justify-center px-5 text-center">
-                <div className="rounded-2xl bg-teal-50 p-4 text-teal-700">
-                  <CalendarClock size={27} />
-                </div>
-                <h3 className="mt-4 font-bold text-slate-800">
-                  No break schedules found
-                </h3>
-                <p className="mt-1 max-w-sm text-sm text-slate-500">
-                  Create a break schedule and assign it to one of your active
-                  shifts.
-                </p>
-                <PrimaryButton onClick={openCreateSchedule} className="mt-4">
-                  <Plus size={16} />
-                  Create schedule
-                </PrimaryButton>
-              </div>
-            ) : (
-              <>
-                {/* Desktop table */}
-                <div className="hidden overflow-x-auto lg:block">
-                  <table className="w-full min-w-[900px] text-left">
-                    <thead className="bg-slate-50/80 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-5 py-3.5">Break schedule</th>
-                        <th className="px-5 py-3.5">Shift</th>
-                        <th className="px-5 py-3.5">Start rule</th>
-                        <th className="px-5 py-3.5">Duration</th>
-                        <th className="px-5 py-3.5">Department</th>
-                        <th className="px-5 py-3.5">Status</th>
-                        <th className="px-5 py-3.5 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredSchedules.map((item) => (
-                        <tr
-                          key={item.id}
-                          className="transition hover:bg-slate-50/70"
-                        >
-                          <td className="px-5 py-4">
-                            <div className="flex items-center gap-3">
-                              <div className="rounded-xl bg-teal-50 p-2.5 text-teal-700">
-                                <Coffee size={17} />
-                              </div>
-                              <div>
-                                <p className="font-semibold text-slate-800">
-                                  {item.name}
-                                </p>
-                                <p className="mt-0.5 text-xs text-slate-400">
-                                  #{item.sequence_number} ·{" "}
-                                  {item.break_type?.name || "Unknown type"}
-                                </p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="px-5 py-4">
-                            <p className="text-sm font-semibold text-slate-700">
-                              {item.shift?.name || "Unknown shift"}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              {getShiftTime(item.shift)}
-                            </p>
-                          </td>
-                          <td className="px-5 py-4">
-                            <span className="inline-flex items-center rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700">
-                              <Clock3 size={13} className="mr-1.5" />
-                              Flexible · Anytime on duty
-                            </span>
-                          </td>
-                          <td className="px-5 py-4">
-                            <p className="text-sm font-semibold text-slate-700">
-                              {formatDuration(item.duration_minutes)}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              {item.max_occurrences_per_shift
-                                ? `Max ${item.max_occurrences_per_shift} per shift`
-                                : "No count limit"}
-                            </p>
-                          </td>
-                          <td className="px-5 py-4">
-                            {item.department ? (
-                              <span className="text-sm text-slate-700">
-                                {item.department.name}
-                              </span>
-                            ) : (
-                              <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">
-                                All departments
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-5 py-4">
-                            <StatusBadge active={item.is_active} />
-                          </td>
-                          <td className="px-5 py-4">
-                            <div className="flex justify-end gap-1">
-                              <button
-                                onClick={() => openEditSchedule(item)}
-                                className="rounded-lg p-2 text-slate-500 transition hover:bg-teal-50 hover:text-teal-700"
-                                title="Edit schedule"
-                              >
-                                <Edit3 size={16} />
-                              </button>
-                              <button
-                                onClick={() => toggleScheduleStatus(item)}
-                                className={cx(
-                                  "rounded-lg p-2 transition",
-                                  item.is_active
-                                    ? "text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                                    : "text-emerald-600 hover:bg-emerald-50",
-                                )}
-                                title={
-                                  item.is_active ? "Deactivate" : "Activate"
-                                }
-                              >
-                                {item.is_active ? (
-                                  <ToggleRight size={19} />
-                                ) : (
-                                  <ToggleLeft size={19} />
-                                )}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+            <ul className="divide-y divide-[#EEF3FB]">
+              {filteredTypes.map((item) => {
+                const isSelected = selectedType?.id === item.id;
 
-                {/* Mobile cards */}
-                <div className="grid gap-3 p-3 sm:p-4 lg:hidden">
-                  {filteredSchedules.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-xl border border-slate-200 p-4"
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTypeId(item.id)}
+                      aria-pressed={isSelected}
+                      className={`grid w-full items-center gap-x-5 gap-y-2 border-l-4 px-5 py-4 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_70px_70px_90px] ${
+                        isSelected
+                          ? "border-[#1D63D6] bg-[#EAF1FD]/60"
+                          : "border-transparent hover:bg-[#F7FAFE]"
+                      }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <div className="rounded-xl bg-teal-50 p-2.5 text-teal-700">
-                            <Coffee size={18} />
-                          </div>
-                          <div className="min-w-0">
-                            <p className="truncate font-semibold text-slate-900">
-                              {item.name}
-                            </p>
-                            <p className="mt-0.5 text-xs text-slate-500">
-                              {item.shift?.name || "Unknown shift"} · #
-                              {item.sequence_number}
-                            </p>
-                          </div>
-                        </div>
-                        <StatusBadge active={item.is_active} />
-                      </div>
-
-                      <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-3">
-                        <div>
-                          <p className="text-xs text-slate-400">Start rule</p>
-                          <p className="mt-1 text-sm font-bold text-teal-700">
-                            Flexible
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">Duration</p>
-                          <p className="mt-1 text-sm font-bold text-slate-800">
-                            {formatDuration(item.duration_minutes)}
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-slate-400">
-                            {item.max_occurrences_per_shift
-                              ? `Max ${item.max_occurrences_per_shift} per shift`
-                              : "No count limit"}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
-                          {item.break_type?.name || "Unknown type"}
-                        </span>
-                        <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs text-violet-700">
-                          {item.department?.name || "All departments"}
-                        </span>
-                      </div>
-
-                      <div className="mt-3 flex justify-end gap-2 border-t border-slate-100 pt-3">
-                        <SecondaryButton onClick={() => openEditSchedule(item)}>
-                          <Edit3 size={15} />
-                          Edit
-                        </SecondaryButton>
-                        <SecondaryButton
-                          onClick={() => toggleScheduleStatus(item)}
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div
+                          className={`rounded-xl p-2.5 ${
+                            item.is_active
+                              ? "bg-[#EAF1FD] text-[#1D63D6]"
+                              : "bg-slate-100 text-slate-400"
+                          }`}
                         >
-                          {item.is_active ? (
-                            <ToggleRight size={16} />
-                          ) : (
-                            <ToggleLeft size={16} />
-                          )}
-                          {item.is_active ? "Deactivate" : "Activate"}
-                        </SecondaryButton>
+                          <Coffee size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                            {item.name}
+                          </p>
+                          <p className="truncate text-xs text-slate-500">
+                            {item.description || "No description"}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-      )}
 
-      {/* BREAK TYPES TAB */}
-      {activeTab === "types" && (
-        <section className="space-y-4">
-          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <div className="relative flex-1">
-                <Search
-                  size={17}
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  value={typeSearch}
-                  onChange={(e) => setTypeSearch(e.target.value)}
-                  placeholder="Search break types..."
-                  className={`${inputClass} pl-10`}
-                />
-              </div>
-              <select
-                value={typeStatus}
-                onChange={(e) => setTypeStatus(e.target.value)}
-                className={cx(inputClass, "sm:w-44")}
-              >
-                <option value="all">All statuses</option>
-                <option value="active">Active only</option>
-                <option value="inactive">Inactive only</option>
-              </select>
-            </div>
-          </div>
+                      <div
+                        className="h-3 overflow-hidden rounded-full bg-[#EEF3FB]"
+                        role="img"
+                        aria-label={`${item.allowed_duration_minutes} minutes allowed`}
+                      >
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            item.is_active ? "bg-[#1D63D6]" : "bg-slate-300"
+                          }`}
+                          style={{
+                            width: `${Math.max(
+                              ((item.allowed_duration_minutes || 0) /
+                                maxAllowed) *
+                                100,
+                              4,
+                            )}%`,
+                          }}
+                        />
+                      </div>
 
-          {loading ? (
-            <div className="flex min-h-64 items-center justify-center gap-2 text-sm text-slate-500">
-              <Loader2 size={19} className="animate-spin text-teal-700" />
-              Loading break types...
-            </div>
-          ) : filteredTypes.length === 0 ? (
-            <div className="flex min-h-64 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-center">
-              <div className="rounded-2xl bg-teal-50 p-4 text-teal-700">
-                <Coffee size={27} />
-              </div>
-              <h3 className="mt-4 font-bold text-slate-800">
-                No break types found
-              </h3>
-              <p className="mt-1 max-w-sm text-sm text-slate-500">
-                Add break types such as morning break, lunch break, or afternoon
-                break.
-              </p>
-              <PrimaryButton onClick={openCreateType} className="mt-4">
-                <Plus size={16} />
-                Add break type
-              </PrimaryButton>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {filteredTypes.map((item) => (
-                <div
-                  key={item.id}
-                  className="group rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="rounded-xl bg-teal-50 p-3 text-teal-700">
-                      <Coffee size={21} />
-                    </div>
-                    <StatusBadge active={item.is_active} />
-                  </div>
-
-                  <h3 className="mt-4 text-lg font-bold text-slate-900">
-                    {item.name}
-                  </h3>
-                  <p className="mt-1 min-h-10 text-sm leading-relaxed text-slate-500">
-                    {item.description || "No description provided."}
-                  </p>
-
-                  <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-50 px-3.5 py-3">
-                    <div>
-                      <p className="text-xs text-slate-400">Allowed duration</p>
-                      <p className="mt-1 text-lg font-bold text-slate-900">
+                      <p className="text-sm font-semibold text-[#0B3A8C] md:text-right">
                         {formatDuration(item.allowed_duration_minutes)}
                       </p>
-                    </div>
-                    <PaidBadge paid={item.is_paid} />
-                  </div>
 
-                  <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
-                    <button
-                      onClick={() => toggleTypeStatus(item)}
-                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 transition hover:text-teal-700"
-                    >
-                      {item.is_active ? (
-                        <ToggleRight size={17} />
-                      ) : (
-                        <ToggleLeft size={17} />
-                      )}
-                      {item.is_active ? "Deactivate" : "Activate"}
+                      <div className="md:text-right">
+                        <PaidBadge paid={item.is_paid} />
+                      </div>
+
+                      <div className="md:text-right">
+                        <StatusBadge active={item.is_active} />
+                      </div>
                     </button>
-                    <button
-                      onClick={() => openEditType(item)}
-                      className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-teal-700 transition hover:bg-teal-50"
-                    >
-                      <Edit3 size={14} />
-                      Edit details
-                    </button>
-                  </div>
-                </div>
-              ))}
+                  </li>
+                );
+              })}
+            </ul>
+
+            <div className="border-t border-[#EEF3FB] px-5 py-3 text-xs text-slate-500">
+              Bar length is relative to the longest allowance.
             </div>
+          </div>
+
+          {selectedType && (
+            <TypeDetail
+              type={selectedType}
+              usedBy={schedules.filter(
+                (schedule) => schedule.break_type_id === selectedType.id,
+              )}
+              onEdit={() => setTypeModal({ type: selectedType })}
+              onToggle={() =>
+                setConfirm({ kind: "break type", item: selectedType })
+              }
+            />
           )}
-        </section>
+        </div>
       )}
 
-      {/* BREAK TYPE MODAL */}
       {typeModal && (
-        <Modal
-          title={editingType ? "Edit break type" : "Create break type"}
-          description="Define the break category and its allowed duration."
-          onClose={() => !saving && setTypeModal(false)}
-        >
-          <form onSubmit={saveType} className="space-y-4">
-            {error && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
-                {error}
-              </div>
-            )}
-
-            <Field label="Break type name" required>
-              <input
-                required
-                maxLength={100}
-                value={typeForm.name}
-                onChange={(e) =>
-                  setTypeForm((prev) => ({ ...prev, name: e.target.value }))
-                }
-                placeholder="e.g. Morning Break"
-                className={inputClass}
-              />
-            </Field>
-
-            <Field label="Description">
-              <textarea
-                rows={3}
-                value={typeForm.description}
-                onChange={(e) =>
-                  setTypeForm((prev) => ({
-                    ...prev,
-                    description: e.target.value,
-                  }))
-                }
-                placeholder="Brief description of this break type..."
-                className={inputClass}
-              />
-            </Field>
-
-            <Field
-              label="Allowed duration (minutes)"
-              hint="This is the standard allowed break duration."
-              required
-            >
-              <input
-                type="number"
-                min="1"
-                step="1"
-                required
-                value={typeForm.allowed_duration_minutes}
-                onChange={(e) =>
-                  setTypeForm((prev) => ({
-                    ...prev,
-                    allowed_duration_minutes: e.target.value,
-                  }))
-                }
-                className={inputClass}
-              />
-            </Field>
-
-            <div className="rounded-xl border border-slate-200 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-slate-800">
-                    Paid break
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    Is this break included in paid working time?
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={typeForm.is_paid}
-                  onClick={() =>
-                    setTypeForm((prev) => ({
-                      ...prev,
-                      is_paid: !prev.is_paid,
-                    }))
-                  }
-                  className={cx(
-                    "relative h-6 w-11 rounded-full transition",
-                    typeForm.is_paid ? "bg-teal-600" : "bg-slate-300",
-                  )}
-                >
-                  <span
-                    className={cx(
-                      "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition",
-                      typeForm.is_paid ? "left-[22px]" : "left-0.5",
-                    )}
-                  />
-                </button>
-              </div>
-              <div className="mt-3">
-                <PaidBadge paid={typeForm.is_paid} />
-              </div>
-            </div>
-
-            <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
-              <SecondaryButton
-                type="button"
-                onClick={() => setTypeModal(false)}
-                disabled={saving}
-              >
-                Cancel
-              </SecondaryButton>
-              <PrimaryButton type="submit" loading={saving}>
-                <Check size={16} />
-                {editingType ? "Save changes" : "Create break type"}
-              </PrimaryButton>
-            </div>
-          </form>
-        </Modal>
+        <TypeFormModal
+          type={typeModal.type}
+          saving={saving}
+          onClose={() => setTypeModal(null)}
+          onSubmit={saveType}
+        />
       )}
 
-      {/* BREAK SCHEDULE MODAL */}
       {scheduleModal && (
-        <Modal
-          wide
-          title={
-            editingSchedule ? "Edit break schedule" : "Create break schedule"
-          }
-          description="Set the break allowance. Employees can start this break anytime during their shift."
-          onClose={() => !saving && setScheduleModal(false)}
-        >
-          <form onSubmit={saveSchedule} className="space-y-5">
-            {error && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
-                {error}
-              </div>
-            )}
+        <ScheduleFormModal
+          schedule={scheduleModal.schedule}
+          initialShiftId={scheduleModal.shiftId}
+          references={references}
+          saving={saving}
+          onClose={() => setScheduleModal(null)}
+          onSubmit={saveSchedule}
+        />
+      )}
 
-            <Field label="Schedule name" required>
-              <input
-                required
-                maxLength={100}
-                value={scheduleForm.name}
-                onChange={(e) =>
-                  setScheduleForm((prev) => ({
-                    ...prev,
-                    name: e.target.value,
-                  }))
-                }
-                placeholder="e.g. Morning Break - Warehouse"
-                className={inputClass}
-              />
-            </Field>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Shift" required>
-                <select
-                  required
-                  value={scheduleForm.shift_id}
-                  onChange={(e) =>
-                    setScheduleForm((prev) => ({
-                      ...prev,
-                      shift_id: e.target.value,
-                    }))
-                  }
-                  className={inputClass}
-                >
-                  <option value="">Select shift</option>
-                  {references.shifts.map((shift) => (
-                    <option key={shift.id} value={shift.id}>
-                      {shift.name} ({formatTime(shift.start_time)} –{" "}
-                      {formatTime(shift.end_time)})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Break type" required>
-                <select
-                  required
-                  value={scheduleForm.break_type_id}
-                  onChange={(e) => {
-                    const selected = references.breakTypes.find(
-                      (item) => item.id === e.target.value,
-                    );
-
-                    setScheduleForm((prev) => ({
-                      ...prev,
-                      break_type_id: e.target.value,
-                      duration_minutes:
-                        selected?.allowed_duration_minutes ||
-                        prev.duration_minutes,
-                    }));
-                  }}
-                  className={inputClass}
-                >
-                  <option value="">Select break type</option>
-                  {references.breakTypes.map((type) => (
-                    <option key={type.id} value={type.id}>
-                      {type.name} · {type.allowed_duration_minutes} min
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            <Field
-              label="Department"
-              hint="Leave this empty if the schedule applies to all departments."
-            >
-              <select
-                value={scheduleForm.department_id}
-                onChange={(e) =>
-                  setScheduleForm((prev) => ({
-                    ...prev,
-                    department_id: e.target.value,
-                  }))
-                }
-                className={inputClass}
-              >
-                <option value="">All departments</option>
-                {references.departments.map((department) => (
-                  <option key={department.id} value={department.id}>
-                    {department.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field
-                label="Display order"
-                hint="Used only to organize break rules in the list."
-                required
-              >
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  required
-                  value={scheduleForm.sequence_number}
-                  onChange={(e) =>
-                    setScheduleForm((prev) => ({
-                      ...prev,
-                      sequence_number: e.target.value,
-                    }))
-                  }
-                  className={inputClass}
-                />
-              </Field>
-
-              <Field
-                label="Maximum breaks per shift"
-                hint="Leave blank to allow repeated breaks without a configured count limit."
-              >
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={scheduleForm.max_occurrences_per_shift}
-                  onChange={(e) =>
-                    setScheduleForm((prev) => ({
-                      ...prev,
-                      max_occurrences_per_shift: e.target.value,
-                    }))
-                  }
-                  placeholder="No limit"
-                  className={inputClass}
-                />
-              </Field>
-
-              <Field label="Allowed duration (minutes)" required>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  required
-                  value={scheduleForm.duration_minutes}
-                  onChange={(e) =>
-                    setScheduleForm((prev) => ({
-                      ...prev,
-                      duration_minutes: e.target.value,
-                    }))
-                  }
-                  className={inputClass}
-                />
-              </Field>
-            </div>
-
-            {selectedBreakType && (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3.5 py-3">
-                <div>
-                  <p className="text-xs font-semibold text-slate-500">
-                    Selected break type allowance
-                  </p>
-                  <p className="mt-1 text-sm font-bold text-slate-800">
-                    {selectedBreakType.allowed_duration_minutes} minutes
-                    <span className="ml-2">
-                      <PaidBadge paid={selectedBreakType.is_paid} />
-                    </span>
-                  </p>
-                </div>
-                {Number(scheduleForm.duration_minutes) >
-                  selectedBreakType.allowed_duration_minutes && (
-                  <span className="text-xs font-medium text-amber-700">
-                    Longer than the break type allowance
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Flexible break behavior */}
-            <div className="overflow-hidden rounded-2xl border border-teal-100 bg-teal-50/70">
-              <div className="flex items-center gap-2 border-b border-teal-100 px-4 py-3 text-sm font-semibold text-teal-800">
-                <Clock3 size={17} />
-                Flexible break rule
-              </div>
-              <div className="space-y-2 p-4">
-                <p className="text-sm font-semibold text-slate-800">
-                  Employees can start this break anytime while on duty.
-                </p>
-                <p className="text-xs leading-5 text-slate-600">
-                  The kiosk will record the actual start and end time. The
-                  system will compare the actual duration against this rule's
-                  allowance and calculate any excess time.
-                </p>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <span className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-teal-700">
-                    Duration: {formatDuration(scheduleForm.duration_minutes)}
-                  </span>
-                  <span className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-teal-700">
-                    {scheduleForm.max_occurrences_per_shift
-                      ? `Up to ${scheduleForm.max_occurrences_per_shift} per shift`
-                      : "No configured count limit"}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {references.shifts.length === 0 && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-800">
-                No active shifts found. Create or activate a shift before
-                configuring break schedules.
-              </div>
-            )}
-
-            {references.breakTypes.length === 0 && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-800">
-                No active break types found. Create a break type first.
-              </div>
-            )}
-
-            <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
-              <SecondaryButton
-                type="button"
-                onClick={() => setScheduleModal(false)}
-                disabled={saving}
-              >
-                Cancel
-              </SecondaryButton>
-              <PrimaryButton
-                type="submit"
-                loading={saving}
-                disabled={
-                  references.shifts.length === 0 ||
-                  references.breakTypes.length === 0
-                }
-              >
-                <Check size={16} />
-                {editingSchedule ? "Save changes" : "Create schedule"}
-              </PrimaryButton>
-            </div>
-          </form>
-        </Modal>
+      {confirm && (
+        <ConfirmStatusModal
+          item={confirm.item}
+          kind={confirm.kind}
+          busy={saving}
+          onClose={() => setConfirm(null)}
+          onConfirm={confirmStatus}
+        />
       )}
     </div>
   );

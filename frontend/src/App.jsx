@@ -26,7 +26,7 @@ function PlaceholderPage({ title }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-8">
       <p className="text-xs font-semibold tracking-widest text-teal-700">
-        WORKFORCE MANAGEMENT
+        RCS - RR MANAGEMENT
       </p>
 
       <h1 className="mt-2 text-2xl font-semibold text-slate-900">{title}</h1>

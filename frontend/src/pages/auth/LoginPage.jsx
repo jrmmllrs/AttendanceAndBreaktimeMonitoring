@@ -62,7 +62,7 @@ export default function LoginPage() {
             <Warehouse size={23} />
           </div>
           <div>
-            <p className="font-semibold tracking-tight">Workforce</p>
+            <p className="font-semibold tracking-tight">RCS - RR</p>
             <p className="text-xs text-teal-100/60">Warehouse Management</p>
           </div>
         </div>
@@ -70,11 +70,11 @@ export default function LoginPage() {
         <div className="relative z-10 max-w-xl">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-teal-100">
             <ShieldCheck size={14} />
-            Workforce operations platform
+            RCS - RR operations platform
           </div>
 
           <h1 className="text-4xl font-semibold leading-[1.15] tracking-tight xl:text-5xl">
-            A better way to manage your warehouse workforce.
+            A better way to manage your warehouse RCS - RR.
           </h1>
 
           <p className="mt-6 max-w-md text-base leading-7 text-slate-300">
@@ -99,7 +99,7 @@ export default function LoginPage() {
         </div>
 
         <p className="relative z-10 text-xs text-slate-400">
-          © {new Date().getFullYear()} Workforce Management System
+          © {new Date().getFullYear()} RCS - RR Management System
         </p>
       </section>
 
@@ -110,7 +110,7 @@ export default function LoginPage() {
               <Warehouse size={23} />
             </div>
             <div>
-              <p className="font-semibold text-slate-900">Workforce</p>
+              <p className="font-semibold text-slate-900">RCS - RR</p>
               <p className="text-xs text-slate-500">Warehouse Management</p>
             </div>
           </div>
@@ -123,7 +123,7 @@ export default function LoginPage() {
               Welcome back
             </h2>
             <p className="mt-2 text-sm text-slate-500">
-              Sign in to access your workforce dashboard.
+              Sign in to access your RCS - RR dashboard.
             </p>
           </div>
 
