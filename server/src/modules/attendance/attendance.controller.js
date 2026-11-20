@@ -1510,7 +1510,7 @@ export const saveBulkAttendance = async (req, res) => {
     }
 
     return res.status(200).json({
-      success: true,
+      success: true,  
       message: data?.message || "Attendance saved successfully.",
       data,
     });

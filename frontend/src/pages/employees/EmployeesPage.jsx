@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BriefcaseBusiness,
   Building2,
   CalendarDays,
+  Check,
   ChevronDown,
   LoaderCircle,
   LockKeyhole,
@@ -37,7 +38,11 @@ import { useAuth } from "../../context/AuthContext";
  *  - Right: sticky profile panel for the selected employee with Edit,
  *    Reset kiosk PIN and Deactivate. This replaces the row action menu.
  *
- * Filters: employment type (pills), department, and search.
+ * Filters: employment type (pills), department, position and search.
+ *  - Position is a searchable multi-select (there are many positions), with
+ *    live counts, a "No position" option, and removable chips.
+ *  - Counts only include positions that currently have employees. Use
+ *    "Show positions with no employees" to list the rest.
  * All employment statuses are loaded; each row still shows its status badge.
  */
 
@@ -74,6 +79,10 @@ const EMPLOYMENT_TYPES = [
 const TYPE_FILTERS = [{ value: "all", label: "All" }, ...EMPLOYMENT_TYPES];
 
 const NO_DEPARTMENT = "none";
+const NO_POSITION = "none";
+
+// Rows shown per department group before "Show more"
+const PREVIEW_LIMIT = 8;
 
 /* ---------- Helpers ---------- */
 
@@ -282,6 +291,267 @@ function InfoRow({ icon: Icon, label, children }) {
   );
 }
 
+/* ---------- Position filter (searchable multi-select) ---------- */
+
+/**
+ * options: [{ id, name, count }]
+ * selected: array of option ids
+ *
+ * Built for long lists: type to search, arrow keys + Enter to toggle,
+ * live counts, and positions with no employees are hidden by default.
+ */
+function PositionFilter({ options, selected, onChange, loading }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [showEmpty, setShowEmpty] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+
+  const rootRef = useRef(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  const emptyCount = options.filter(
+    (option) => option.count === 0 && !selectedSet.has(option.id),
+  ).length;
+
+  const visibleOptions = useMemo(() => {
+    const term = q.trim().toLowerCase();
+
+    return options.filter((option) => {
+      const listed =
+        showEmpty || option.count > 0 || selectedSet.has(option.id);
+
+      return listed && (!term || option.name.toLowerCase().includes(term));
+    });
+  }, [options, q, showEmpty, selectedSet]);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const onPointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+
+  // Focus the search box when opening; reset the search when closing
+  useEffect(() => {
+    if (open) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } else {
+      setQ("");
+      setHighlight(0);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setHighlight(0);
+  }, [q, showEmpty]);
+
+  // Keep the highlighted row visible
+  useEffect(() => {
+    if (!open) return;
+
+    listRef.current
+      ?.querySelector(`[data-index="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlight, open]);
+
+  const toggle = (id) => {
+    onChange(
+      selectedSet.has(id)
+        ? selected.filter((item) => item !== id)
+        : [...selected, id],
+    );
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlight((current) =>
+        Math.min(visibleOptions.length - 1, current + 1),
+      );
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlight((current) => Math.max(0, current - 1));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = visibleOptions[highlight];
+      if (option) toggle(option.id);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+    }
+  };
+
+  let label = "All positions";
+  if (selected.length === 1) {
+    label =
+      options.find((option) => option.id === selected[0])?.name || "1 position";
+  } else if (selected.length > 1) {
+    label = `${selected.length} positions`;
+  }
+
+  const active = selected.length > 0;
+
+  return (
+    <div ref={rootRef} className="relative sm:w-52">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Filter by position"
+        className={`${inputClass} flex items-center gap-2 text-left ${
+          active ? "border-[#1D63D6] bg-[#EAF1FD]/50" : ""
+        }`}
+      >
+        <BriefcaseBusiness
+          size={15}
+          className={active ? "text-[#1D63D6]" : "text-slate-400"}
+        />
+        <span
+          className={`min-w-0 flex-1 truncate ${
+            active ? "font-semibold text-[#0B3A8C]" : "text-slate-700"
+          }`}
+        >
+          {label}
+        </span>
+        <ChevronDown
+          size={15}
+          className={`shrink-0 text-slate-400 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[#E3EAF5] bg-white shadow-xl shadow-[#0B3A8C]/10">
+          <div className="border-b border-[#EEF3FB] p-2.5">
+            <div className="relative">
+              <Search
+                size={15}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                ref={inputRef}
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Search positions..."
+                aria-label="Search positions"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls="position-options"
+                className="h-9 w-full rounded-lg border border-[#E3EAF5] bg-white pl-9 pr-3 text-sm outline-none placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-4 focus:ring-[#1D63D6]/10"
+              />
+            </div>
+          </div>
+
+          <ul
+            id="position-options"
+            ref={listRef}
+            role="listbox"
+            aria-multiselectable="true"
+            className="max-h-72 overflow-y-auto py-1"
+          >
+            {loading ? (
+              <li className="px-4 py-6 text-center text-sm text-slate-400">
+                Loading...
+              </li>
+            ) : visibleOptions.length === 0 ? (
+              <li className="px-4 py-6 text-center text-sm text-slate-500">
+                {q ? "No positions match your search." : "No positions found."}
+              </li>
+            ) : (
+              visibleOptions.map((option, index) => {
+                const checked = selectedSet.has(option.id);
+                const isNone = option.id === NO_POSITION;
+
+                return (
+                  <li
+                    key={option.id}
+                    role="option"
+                    aria-selected={checked}
+                    data-index={index}
+                    onMouseEnter={() => setHighlight(index)}
+                    onClick={() => {
+                      toggle(option.id);
+                      inputRef.current?.focus();
+                    }}
+                    className={`flex cursor-pointer items-center gap-3 px-3.5 py-2 text-sm ${
+                      highlight === index ? "bg-[#F7FAFE]" : ""
+                    }`}
+                  >
+                    <span
+                      className={`flex h-4.5 w-4.5 h-[18px] w-[18px] shrink-0 items-center justify-center rounded border ${
+                        checked
+                          ? "border-[#1D63D6] bg-[#1D63D6] text-white"
+                          : "border-slate-300 bg-white"
+                      }`}
+                    >
+                      {checked && <Check size={12} strokeWidth={3} />}
+                    </span>
+
+                    <span
+                      className={`min-w-0 flex-1 truncate ${
+                        isNone
+                          ? "font-medium text-[#C8102E]"
+                          : option.count === 0
+                            ? "text-slate-400"
+                            : "text-slate-700"
+                      }`}
+                    >
+                      {option.name}
+                    </span>
+
+                    <span className="shrink-0 rounded-full bg-[#EEF3FB] px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                      {option.count}
+                    </span>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+
+          <div className="flex items-center justify-between gap-3 border-t border-[#EEF3FB] bg-[#F7FAFE] px-3.5 py-2.5">
+            {emptyCount > 0 || showEmpty ? (
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={showEmpty}
+                  onChange={(event) => setShowEmpty(event.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 accent-[#1D63D6]"
+                />
+                Show positions with no employees
+              </label>
+            ) : (
+              <span className="text-xs text-slate-400">
+                {visibleOptions.length} position
+                {visibleOptions.length === 1 ? "" : "s"}
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              disabled={!active}
+              className="shrink-0 text-xs font-semibold text-[#1D63D6] hover:text-[#0B3A8C] disabled:cursor-not-allowed disabled:text-slate-300"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Profile panel ---------- */
 
 function EmployeeProfile({
@@ -323,27 +593,27 @@ function EmployeeProfile({
         </div>
 
         <dl className="space-y-3.5">
-          <InfoRow icon={Mail} label="Email">
+          {/* <InfoRow icon={Mail} label="Email">
             {employee.email}
           </InfoRow>
           <InfoRow icon={Phone} label="Contact number">
             {employee.phone}
-          </InfoRow>
+          </InfoRow> */}
           <InfoRow icon={Building2} label="Department">
             {employee.department_name}
           </InfoRow>
           <InfoRow icon={BriefcaseBusiness} label="Position">
             {employee.position_name}
           </InfoRow>
-          <InfoRow icon={UserCog} label="Reports to">
+          {/* <InfoRow icon={UserCog} label="Reports to">
             {reportsTo &&
               `${reportsTo.first_name} ${reportsTo.last_name} (${reportsTo.employee_number})`}
-          </InfoRow>
-          <InfoRow icon={CalendarDays} label="Employment">
+          </InfoRow> */}
+          {/* <InfoRow icon={CalendarDays} label="Employment">
             {employee.employment_type
               ? `${employmentLabel(employee.employment_type)} · hired ${formatDate(employee.date_hired)}`
               : null}
-          </InfoRow>
+          </InfoRow> */}
           {employee.address && (
             <InfoRow icon={MapPin} label="Address">
               {employee.address}
@@ -369,10 +639,10 @@ function EmployeeProfile({
               Edit
             </button>
 
-            <button type="button" onClick={onPin} className={secondaryButton}>
+            {/* <button type="button" onClick={onPin} className={secondaryButton}>
               <LockKeyhole size={15} />
               Reset PIN
-            </button>
+            </button> */}
 
             <button
               type="button"
@@ -824,9 +1094,12 @@ export default function EmployeesPage() {
   const [query, setQuery] = useState("");
   const [employmentType, setEmploymentType] = useState("all");
   const [departmentId, setDepartmentId] = useState("all");
+  const [positionIds, setPositionIds] = useState([]);
 
   const [selectedId, setSelectedId] = useState(null);
   const [collapsed, setCollapsed] = useState(() => new Set());
+  const [expanded, setExpanded] = useState(() => new Set());
+  const [density, setDensity] = useState("compact"); // compact | comfortable
 
   const [formModal, setFormModal] = useState(null); // { employee } | null
   const [pinEmployee, setPinEmployee] = useState(null);
@@ -890,12 +1163,68 @@ export default function EmployeesPage() {
 
   /* ----- Derived data ----- */
 
-  // Employment type is filtered on the client, on top of the search and
-  // department filters that are sent to the API.
-  const visibleEmployees =
-    employmentType === "all"
-      ? employees
-      : employees.filter((item) => item.employment_type === employmentType);
+  // Employment type and position are filtered on the client, on top of the
+  // search and department filters that are sent to the API.
+  const typeFiltered = useMemo(
+    () =>
+      employmentType === "all"
+        ? employees
+        : employees.filter((item) => item.employment_type === employmentType),
+    [employees, employmentType],
+  );
+
+  // Position options with live counts (respecting the other filters).
+  const positionOptions = useMemo(() => {
+    const names = new Map(
+      references.positions.map((position) => [position.id, position.name]),
+    );
+
+    // Positions that appear on employees but are missing from references
+    employees.forEach((employee) => {
+      if (employee.position_id && !names.has(employee.position_id)) {
+        names.set(
+          employee.position_id,
+          employee.position_name || "Unnamed position",
+        );
+      }
+    });
+
+    const counts = new Map();
+
+    typeFiltered.forEach((employee) => {
+      const key = employee.position_id || NO_POSITION;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    const list = [...names.entries()]
+      .map(([id, name]) => ({ id, name, count: counts.get(id) || 0 }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // "No position" goes first so gaps are easy to find
+    return [
+      {
+        id: NO_POSITION,
+        name: "No position",
+        count: counts.get(NO_POSITION) || 0,
+      },
+      ...list,
+    ];
+  }, [references.positions, employees, typeFiltered]);
+
+  const positionNameById = useMemo(
+    () => new Map(positionOptions.map((option) => [option.id, option.name])),
+    [positionOptions],
+  );
+
+  const visibleEmployees = useMemo(() => {
+    if (positionIds.length === 0) return typeFiltered;
+
+    const wanted = new Set(positionIds);
+
+    return typeFiltered.filter((item) =>
+      wanted.has(item.position_id || NO_POSITION),
+    );
+  }, [typeFiltered, positionIds]);
 
   const typeCounts = employees.reduce(
     (counts, item) => {
@@ -948,12 +1277,14 @@ export default function EmployeesPage() {
   const hasFilters =
     Boolean(search.trim()) ||
     departmentId !== "all" ||
-    employmentType !== "all";
+    employmentType !== "all" ||
+    positionIds.length > 0;
 
   const resetFilters = () => {
     setSearch("");
     setDepartmentId("all");
     setEmploymentType("all");
+    setPositionIds([]);
   };
 
   /* ----- Actions ----- */
@@ -979,6 +1310,19 @@ export default function EmployeesPage() {
       else next.add(key);
       return next;
     });
+
+  const toggleExpanded = (key) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const collapseAll = () =>
+    setCollapsed(new Set(groups.map((group) => group.key)));
+
+  const expandAll = () => setCollapsed(new Set());
 
   const handleSaveEmployee = async (form) => {
     setSaving(true);
@@ -1168,8 +1512,8 @@ export default function EmployeesPage() {
       </section>
 
       {/* Filters */}
-      <section className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <section className="space-y-3">
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div
             className="flex gap-2 overflow-x-auto pb-0.5"
             role="group"
@@ -1203,8 +1547,8 @@ export default function EmployeesPage() {
             })}
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className="relative sm:w-72">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative sm:w-64">
               <Search
                 size={17}
                 className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
@@ -1232,6 +1576,13 @@ export default function EmployeesPage() {
               ))}
             </select>
 
+            <PositionFilter
+              options={positionOptions}
+              selected={positionIds}
+              onChange={setPositionIds}
+              loading={loading}
+            />
+
             {hasFilters && (
               <button
                 type="button"
@@ -1244,6 +1595,36 @@ export default function EmployeesPage() {
             )}
           </div>
         </div>
+
+        {/* Selected position chips */}
+        {positionIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">
+              Position:
+            </span>
+
+            {positionIds.map((id) => (
+              <span
+                key={id}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#CFE0FA] bg-[#EAF1FD] py-1 pl-3 pr-1.5 text-xs font-semibold text-[#0B3A8C]"
+              >
+                {positionNameById.get(id) || "Position"}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPositionIds((current) =>
+                      current.filter((item) => item !== id),
+                    )
+                  }
+                  aria-label={`Remove ${positionNameById.get(id) || "position"} filter`}
+                  className="rounded-full p-0.5 text-[#1D63D6] transition hover:bg-white"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Content */}
@@ -1292,134 +1673,225 @@ export default function EmployeesPage() {
       ) : (
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
           {/* Grouped list */}
-          <div className="space-y-4">
-            {groups.map((group) => {
-              const open = !collapsed.has(group.key);
-              const missing = group.key === NO_DEPARTMENT;
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-500">
+                {groups.length} group{groups.length === 1 ? "" : "s"} ·{" "}
+                {visibleEmployees.length} employee
+                {visibleEmployees.length === 1 ? "" : "s"}
+              </p>
 
-              return (
-                <section
-                  key={group.key}
-                  className={`overflow-hidden rounded-2xl border bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)] ${
-                    missing ? "border-[#F5C2CA]" : "border-[#E3EAF5]"
-                  }`}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={collapseAll}
+                  className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
                 >
-                  <button
-                    type="button"
-                    onClick={() => toggleGroup(group.key)}
-                    aria-expanded={open}
-                    className={`flex w-full items-center gap-3 px-5 py-3.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] ${
-                      missing ? "bg-[#FDECEF]" : "hover:bg-[#F7FAFE]"
+                  Collapse all
+                </button>
+                <button
+                  type="button"
+                  onClick={expandAll}
+                  className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+                >
+                  Expand all
+                </button>
+
+                <div
+                  role="group"
+                  aria-label="Row density"
+                  className="flex overflow-hidden rounded-lg border border-[#E3EAF5] bg-white"
+                >
+                  {[
+                    { value: "compact", label: "Compact" },
+                    { value: "comfortable", label: "Comfortable" },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setDensity(option.value)}
+                      aria-pressed={density === option.value}
+                      className={`px-2.5 py-1.5 text-xs font-semibold transition ${
+                        density === option.value
+                          ? "bg-[#1D63D6] text-white"
+                          : "text-slate-600 hover:bg-[#F7FAFE]"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3 xl:max-h-[calc(100vh-9rem)] xl:overflow-y-auto xl:pr-1">
+              {groups.map((group) => {
+                const open = !collapsed.has(group.key);
+                const missing = group.key === NO_DEPARTMENT;
+                const compact = density === "compact";
+
+                const showAll = expanded.has(group.key);
+                const rows = showAll
+                  ? group.rows
+                  : group.rows.slice(0, PREVIEW_LIMIT);
+                const hiddenCount = group.rows.length - rows.length;
+
+                return (
+                  <section
+                    key={group.key}
+                    className={`overflow-clip rounded-2xl border bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)] ${
+                      missing ? "border-[#F5C2CA]" : "border-[#E3EAF5]"
                     }`}
                   >
-                    <div
-                      className={`rounded-lg p-2 ${
-                        missing
-                          ? "bg-white text-[#C8102E]"
-                          : "bg-[#EAF1FD] text-[#1D63D6]"
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(group.key)}
+                      aria-expanded={open}
+                      className={`flex w-full items-center gap-3 px-5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] xl:sticky xl:top-0 xl:z-10 ${
+                        compact ? "py-2.5" : "py-3.5"
+                      } ${
+                        missing ? "bg-[#FDECEF]" : "bg-white hover:bg-[#F7FAFE]"
                       }`}
                     >
-                      {missing ? (
-                        <AlertTriangle size={17} />
-                      ) : (
-                        <Building2 size={17} />
-                      )}
-                    </div>
+                      <div
+                        className={`rounded-lg p-1.5 ${
+                          missing
+                            ? "bg-white text-[#C8102E]"
+                            : "bg-[#EAF1FD] text-[#1D63D6]"
+                        }`}
+                      >
+                        {missing ? (
+                          <AlertTriangle size={16} />
+                        ) : (
+                          <Building2 size={16} />
+                        )}
+                      </div>
 
-                    <h2
-                      className={`min-w-0 flex-1 truncate text-sm font-semibold ${
-                        missing ? "text-[#8E0B20]" : "text-[#0B3A8C]"
-                      }`}
-                    >
-                      {group.name}
-                    </h2>
+                      <h2
+                        className={`min-w-0 flex-1 truncate text-sm font-semibold ${
+                          missing ? "text-[#8E0B20]" : "text-[#0B3A8C]"
+                        }`}
+                      >
+                        {group.name}
+                      </h2>
 
-                    <span
-                      className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                        missing
-                          ? "bg-white text-[#C8102E]"
-                          : "bg-[#EAF1FD] text-[#1D63D6]"
-                      }`}
-                    >
-                      {group.rows.length}
-                    </span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          missing
+                            ? "bg-white text-[#C8102E]"
+                            : "bg-[#EAF1FD] text-[#1D63D6]"
+                        }`}
+                      >
+                        {group.rows.length}
+                      </span>
 
-                    <ChevronDown
-                      size={18}
-                      className={`shrink-0 text-slate-400 transition-transform ${
-                        open ? "rotate-180" : ""
-                      }`}
-                    />
-                  </button>
+                      <ChevronDown
+                        size={18}
+                        className={`shrink-0 text-slate-400 transition-transform ${
+                          open ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
 
-                  {open && (
-                    <ul className="divide-y divide-[#EEF3FB] border-t border-[#EEF3FB]">
-                      {group.rows.map((employee) => {
-                        const isSelected = selected?.id === employee.id;
+                    {open && (
+                      <>
+                        <ul className="divide-y divide-[#EEF3FB] border-t border-[#EEF3FB]">
+                          {rows.map((employee) => {
+                            const isSelected = selected?.id === employee.id;
 
-                        return (
-                          <li key={employee.id}>
-                            <button
-                              type="button"
-                              onClick={() => selectEmployee(employee.id)}
-                              aria-pressed={isSelected}
-                              className={`grid w-full items-center gap-x-4 gap-y-1 border-l-4 px-5 py-3.5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_110px_110px] ${
-                                isSelected
-                                  ? "border-[#1D63D6] bg-[#EAF1FD]/60"
-                                  : "border-transparent hover:bg-[#F7FAFE]"
-                              }`}
-                            >
-                              <div className="flex min-w-0 items-center gap-3">
-                                <Avatar employee={employee} />
-                                <div className="min-w-0">
-                                  <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                                    {fullName(employee)}
+                            return (
+                              <li key={employee.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => selectEmployee(employee.id)}
+                                  aria-pressed={isSelected}
+                                  className={`grid w-full items-center gap-x-4 gap-y-1 border-l-4 px-5 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_100px_100px] ${
+                                    compact ? "py-2" : "py-3.5"
+                                  } ${
+                                    isSelected
+                                      ? "border-[#1D63D6] bg-[#EAF1FD]/60"
+                                      : "border-transparent hover:bg-[#F7FAFE]"
+                                  }`}
+                                >
+                                  <div className="flex min-w-0 items-center gap-3">
+                                    <Avatar
+                                      employee={employee}
+                                      size={compact ? "h-8 w-8" : "h-10 w-10"}
+                                      text={compact ? "text-[10px]" : "text-xs"}
+                                    />
+
+                                    {compact ? (
+                                      <p className="min-w-0 truncate text-sm">
+                                        <span className="font-semibold text-[#0B3A8C]">
+                                          {fullName(employee)}
+                                        </span>
+                                        <span className="ml-2 text-xs text-slate-400">
+                                          {employee.employee_number}
+                                        </span>
+                                      </p>
+                                    ) : (
+                                      <div className="min-w-0">
+                                        <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                                          {fullName(employee)}
+                                        </p>
+                                        <p className="truncate text-xs text-slate-500">
+                                          {employee.employee_number}
+                                          {employee.email
+                                            ? ` · ${employee.email}`
+                                            : ""}
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <p className="hidden truncate text-sm text-slate-600 md:block">
+                                    {employee.position_name || "—"}
                                   </p>
-                                  <p className="truncate text-xs text-slate-500">
-                                    {employee.employee_number}
-                                    {employee.email
-                                      ? ` · ${employee.email}`
-                                      : ""}
-                                  </p>
-                                </div>
-                              </div>
 
-                              <p className="hidden truncate text-sm text-slate-600 md:block">
-                                {employee.position_name || "—"}
-                              </p>
+                                  <div className="hidden md:block">
+                                    {employee.employment_type ? (
+                                      <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                                        {employmentLabel(
+                                          employee.employment_type,
+                                        )}
+                                      </span>
+                                    ) : (
+                                      <span className="text-sm text-slate-400">
+                                        —
+                                      </span>
+                                    )}
+                                  </div>
 
-                              <div className="hidden md:block">
-                                {employee.employment_type ? (
-                                  <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
-                                    {employmentLabel(employee.employment_type)}
-                                  </span>
-                                ) : (
-                                  <span className="text-sm text-slate-400">
-                                    —
-                                  </span>
-                                )}
-                              </div>
+                                  <div className="md:text-right">
+                                    <StatusBadge
+                                      status={employee.employment_status}
+                                    />
+                                  </div>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
 
-                              <div className="mt-1 md:mt-0 md:text-right">
-                                <StatusBadge
-                                  status={employee.employment_status}
-                                />
-                              </div>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </section>
-              );
-            })}
+                        {group.rows.length > PREVIEW_LIMIT && (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(group.key)}
+                            className="w-full border-t border-[#EEF3FB] bg-[#F7FAFE] py-2 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+                          >
+                            {showAll ? "Show less" : `Show ${hiddenCount} more`}
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </section>
+                );
+              })}
 
-            <p className="text-xs text-slate-500">
-              Showing {visibleEmployees.length} employee
-              {visibleEmployees.length === 1 ? "" : "s"}. Employee records are
-              retained when deactivated.
-            </p>
+              <p className="px-1 pb-1 text-xs text-slate-500">
+                Employee records are retained when deactivated.
+              </p>
+            </div>
           </div>
 
           {selected && (

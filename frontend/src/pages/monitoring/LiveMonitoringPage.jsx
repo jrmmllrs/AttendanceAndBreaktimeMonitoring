@@ -18,6 +18,10 @@ import {
 } from "lucide-react";
 
 import { api, getApiError } from "../../lib/api";
+import PositionFilter, {
+  positionKey,
+  buildPositionOptions,
+} from "../../components/PositionFilter";
 
 const REFRESH_INTERVAL = 15000;
 const TIME_ZONE = "Asia/Manila";
@@ -27,6 +31,10 @@ const TIME_ZONE = "Asia/Manila";
  *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
  *   Red #C8102E · Light red #FDECEF · Border #E3EAF5
  * Blue = attending, red = not attending or over time, gray = neutral.
+ *
+ * Position filter: reads `position_id` and `position_name` from each employee
+ * in /monitoring/live. The response may also include
+ * `positions: [{ id, name }]`; if it doesn't, options are built from employees.
  */
 
 /* ---------- Helpers ---------- */
@@ -306,6 +314,7 @@ function StatCard({
 const TABLE_HEADINGS = [
   "Employee",
   "Department",
+  "Position",
   "Assigned shift",
   "Attendance",
   "Current activity",
@@ -348,7 +357,7 @@ function EmployeeTable({ employees, loading, onReset, hasFilters }) {
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[920px] text-left">
+      <table className="w-full min-w-[1040px] text-left">
         <thead>
           <tr className="border-y border-[#E3EAF5] bg-[#F7FAFE]">
             {TABLE_HEADINGS.map((heading) => (
@@ -399,6 +408,12 @@ function EmployeeTable({ employees, loading, onReset, hasFilters }) {
 
                 <td className="px-5 py-3.5 text-sm text-slate-600">
                   {employee.department_name}
+                </td>
+
+                <td className="px-5 py-3.5 text-sm text-slate-600">
+                  {employee.position_name || (
+                    <span className="text-slate-400">No position</span>
+                  )}
                 </td>
 
                 <td className="px-5 py-3.5">
@@ -619,6 +634,12 @@ export default function LiveMonitoringPage() {
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [shiftFilter, setShiftFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [positionIds, setPositionIds] = useState([]);
+
+  // Position data from /employees, used when /monitoring/live doesn't
+  // include position_id / position_name on its rows.
+  const [positionMap, setPositionMap] = useState(() => new Map());
+  const [positionList, setPositionList] = useState([]);
 
   const loadMonitoring = useCallback(async (manual = false) => {
     try {
@@ -656,7 +677,57 @@ export default function LiveMonitoringPage() {
     return () => clearInterval(interval);
   }, [loadMonitoring]);
 
-  const employees = data?.employees || [];
+  // Load positions once (same endpoints the Employees page uses)
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const [employeeRes, referenceRes] = await Promise.all([
+          api.get("/employees", {
+            params: { page: 1, limit: 100, status: "all" },
+          }),
+          api.get("/employees/references"),
+        ]);
+
+        if (cancelled) return;
+
+        setPositionMap(
+          new Map(
+            (employeeRes.data?.data || []).map((item) => [
+              item.id,
+              {
+                position_id: item.position_id,
+                position_name: item.position_name,
+              },
+            ]),
+          ),
+        );
+        setPositionList(referenceRes.data?.data?.positions || []);
+      } catch {
+        // Position data is optional; the page still works without it.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Use position fields from the monitoring rows when present;
+  // otherwise fill them in from /employees.
+  const employees = useMemo(
+    () =>
+      (data?.employees || []).map((employee) =>
+        employee.position_id !== undefined
+          ? employee
+          : {
+              ...employee,
+              ...positionMap.get(employee.employee_id ?? employee.id),
+            },
+      ),
+    [data, positionMap],
+  );
 
   // Count per status (for the quick filter chips)
   const statusCounts = useMemo(() => {
@@ -668,7 +739,9 @@ export default function LiveMonitoringPage() {
     return counts;
   }, [employees]);
 
-  const filteredEmployees = useMemo(() => {
+  // Everything except the position filter, so the position counts
+  // reflect what the other filters leave.
+  const baseEmployees = useMemo(() => {
     const keyword = search.trim().toLowerCase();
 
     return employees.filter((employee) => {
@@ -678,6 +751,7 @@ export default function LiveMonitoringPage() {
           employee.employee_name,
           employee.employee_number,
           employee.department_name,
+          employee.position_name,
           employee.shift_name,
         ]
           .filter(Boolean)
@@ -699,17 +773,50 @@ export default function LiveMonitoringPage() {
     });
   }, [employees, search, departmentFilter, shiftFilter, statusFilter]);
 
+  const filteredEmployees = useMemo(
+    () =>
+      positionIds.length === 0
+        ? baseEmployees
+        : baseEmployees.filter((employee) =>
+            positionIds.includes(positionKey(employee)),
+          ),
+    [baseEmployees, positionIds],
+  );
+
+  // Options for the position filter (counts = employees left by other filters)
+  const positionOptions = useMemo(() => {
+    const counts = new Map();
+
+    baseEmployees.forEach((employee) => {
+      const key = positionKey(employee);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    return buildPositionOptions(
+      positionList.length ? positionList : data?.positions || [],
+      employees,
+      counts,
+    );
+  }, [positionList, data, employees, baseEmployees]);
+
+  const positionNameById = useMemo(
+    () => new Map(positionOptions.map((option) => [option.id, option.name])),
+    [positionOptions],
+  );
+
   const hasFilters =
     Boolean(search.trim()) ||
     departmentFilter !== "all" ||
     shiftFilter !== "all" ||
-    statusFilter !== "all";
+    statusFilter !== "all" ||
+    positionIds.length > 0;
 
   const resetFilters = () => {
     setSearch("");
     setDepartmentFilter("all");
     setShiftFilter("all");
     setStatusFilter("all");
+    setPositionIds([]);
   };
 
   const stats = data?.stats || {};
@@ -894,7 +1001,7 @@ export default function LiveMonitoringPage() {
             })}
           </div>
 
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="relative">
               <Search
                 size={16}
@@ -923,6 +1030,15 @@ export default function LiveMonitoringPage() {
               ))}
             </select>
 
+            <PositionFilter
+              options={positionOptions}
+              selected={positionIds}
+              onChange={setPositionIds}
+              loading={isInitialLoad}
+              align="left"
+              className="w-full"
+            />
+
             <select
               value={shiftFilter}
               onChange={(event) => setShiftFilter(event.target.value)}
@@ -937,6 +1053,36 @@ export default function LiveMonitoringPage() {
               ))}
             </select>
           </div>
+
+          {/* Selected position chips */}
+          {positionIds.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-slate-500">
+                Position:
+              </span>
+
+              {positionIds.map((id) => (
+                <span
+                  key={id}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[#CFE0FA] bg-[#EAF1FD] py-1 pl-3 pr-1.5 text-xs font-semibold text-[#0B3A8C]"
+                >
+                  {positionNameById.get(id) || "Position"}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPositionIds((current) =>
+                        current.filter((item) => item !== id),
+                      )
+                    }
+                    aria-label={`Remove ${positionNameById.get(id) || "position"} filter`}
+                    className="rounded-full p-0.5 text-[#1D63D6] transition hover:bg-white"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
         <EmployeeTable

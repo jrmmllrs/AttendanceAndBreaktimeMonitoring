@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  BriefcaseBusiness,
   CalendarDays,
   CheckCircle2,
   ClipboardList,
@@ -621,6 +622,148 @@ function DepartmentSummary({ departments, loading }) {
   );
 }
 
+/* ---------- Positions (present by position) ---------- */
+
+const POSITION_GRID =
+  "md:grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,0.5fr))_minmax(0,1.3fr)]";
+
+const POSITION_PREVIEW = 8;
+
+function PositionSummary({ positions, loading }) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (loading) {
+    return (
+      <div className="space-y-4 pt-6">
+        {[1, 2, 3, 4].map((item) => (
+          <div
+            key={item}
+            className="h-12 animate-pulse rounded-xl bg-[#F4F8FE]"
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (!positions?.length) {
+    return (
+      <EmptyState
+        icon={BriefcaseBusiness}
+        title="No position data yet"
+        description="Attendance by position will appear here once employees have positions."
+      />
+    );
+  }
+
+  const rows = showAll ? positions : positions.slice(0, POSITION_PREVIEW);
+
+  return (
+    <div className="mt-5">
+      {/* Column titles (desktop only) */}
+      <div
+        className={`hidden gap-4 border-b border-[#EEF3FB] pb-2 text-xs font-medium text-slate-500 md:grid ${POSITION_GRID}`}
+      >
+        <span>Position</span>
+        <span className="text-right">Total</span>
+        <span className="text-right">Present</span>
+        <span className="text-right">Absent</span>
+        <span className="text-right">No record</span>
+        <span>Attendance rate</span>
+      </div>
+
+      <ul className="divide-y divide-[#EEF3FB]">
+        {rows.map((position) => {
+          const rate =
+            position.total_employees > 0
+              ? Math.round((position.present / position.total_employees) * 100)
+              : 0;
+          const missing = position.id === null;
+
+          return (
+            <li
+              key={position.id ?? "none"}
+              className={`grid grid-cols-4 gap-x-4 gap-y-2 py-3.5 md:items-center ${POSITION_GRID}`}
+            >
+              <div className="col-span-4 min-w-0 md:col-span-1">
+                <p
+                  className={`truncate text-sm font-semibold ${
+                    missing ? "text-[#C8102E]" : "text-[#0B3A8C]"
+                  }`}
+                >
+                  {position.name}
+                </p>
+
+                {position.overbreak > 0 && (
+                  <p className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-[#C8102E]">
+                    <AlertTriangle size={11} />
+                    {position.overbreak} overbreak
+                  </p>
+                )}
+              </div>
+
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Total</p>
+                <p className="text-sm font-medium text-slate-700">
+                  {position.total_employees}
+                </p>
+              </div>
+
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Present</p>
+                <p className="text-sm font-semibold text-[#1D63D6]">
+                  {position.present}
+                </p>
+              </div>
+
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">Absent</p>
+                <p
+                  className={`text-sm font-semibold ${
+                    position.absent > 0 ? "text-[#C8102E]" : "text-slate-400"
+                  }`}
+                >
+                  {position.absent}
+                </p>
+              </div>
+
+              <div className="md:text-right">
+                <p className="text-xs text-slate-500 md:hidden">No record</p>
+                <p className="text-sm font-medium text-slate-500">
+                  {position.no_attendance}
+                </p>
+              </div>
+
+              <div className="col-span-4 flex items-center gap-3 md:col-span-1">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#EEF3FB]">
+                  <div
+                    className="h-full rounded-full bg-[#1D63D6] transition-all duration-500"
+                    style={{ width: `${rate}%` }}
+                  />
+                </div>
+                <span className="w-10 shrink-0 text-right text-xs font-medium text-slate-600">
+                  {rate}%
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+
+      {positions.length > POSITION_PREVIEW && (
+        <button
+          type="button"
+          onClick={() => setShowAll((current) => !current)}
+          className="mt-2 w-full rounded-lg bg-[#F7FAFE] py-2 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+        >
+          {showAll
+            ? "Show less"
+            : `Show ${positions.length - POSITION_PREVIEW} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Breaktime ---------- */
 
 function BreaktimePanel({ employees, loading }) {
@@ -983,6 +1126,26 @@ export default function DashboardPage() {
 
           <DepartmentSummary
             departments={dashboard?.departments || []}
+            loading={isInitialLoad}
+          />
+        </Card>
+      </section>
+
+      {/* Present by position */}
+      <section aria-label="Attendance by position">
+        <Card>
+          <SectionHeading
+            title="Present by position"
+            description="How many are present per position today (present, late and half day)"
+            action={
+              <span className="shrink-0 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
+                {isInitialLoad ? "—" : stats.present || 0} present
+              </span>
+            }
+          />
+
+          <PositionSummary
+            positions={dashboard?.positions || []}
             loading={isInitialLoad}
           />
         </Card>

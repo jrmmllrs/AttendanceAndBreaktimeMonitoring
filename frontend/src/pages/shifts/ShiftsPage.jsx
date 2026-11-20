@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertCircle,
+  BriefcaseBusiness,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -31,6 +39,14 @@ import { api, getApiError } from "../../lib/api";
  *    marker) with a sticky detail panel for the selected shift.
  *  - Assignments tab: employees grouped by shift, with an "Unassigned"
  *    group on top so gaps in coverage are the first thing you see.
+ *
+ * Assignments filters: search, position (searchable multi-select with live
+ * counts), shift and history. The position filter replaces the old
+ * department filter, and the bulk-assign picker uses it as well.
+ *
+ * Position data: the page reads `position_id` and `position_name` from each
+ * employee (both in /shifts/references and in each assignment's `employee`).
+ * `/shifts/references` may also return `positions: [{ id, name }]`.
  */
 
 const DAYS = [
@@ -51,6 +67,8 @@ const SHIFT_STATUS = [
   { value: "inactive", label: "Inactive" },
   { value: "all", label: "All" },
 ];
+
+const NO_POSITION = "none";
 
 /* ---------- Helpers ---------- */
 
@@ -134,6 +152,49 @@ function assignmentState(assignment, today) {
   if (assignment.effective_until && assignment.effective_until < today)
     return "historical";
   return "current";
+}
+
+const positionKey = (person) => person?.position_id || NO_POSITION;
+
+// Name from the employee itself, or looked up by id in `names` (Map)
+const positionLabel = (person, names) =>
+  person?.position_name ||
+  person?.position?.name ||
+  (person?.position_id && names?.get(person.position_id)) ||
+  null;
+
+/**
+ * Builds the options for the position filter.
+ *   positions: [{ id, name }] from the API (may be empty)
+ *   people:    employees used to discover positions the API did not list
+ *   counts:    Map<positionId | NO_POSITION, number of employees>
+ */
+function buildPositionOptions(positions, people, counts) {
+  const names = new Map(
+    positions.map((position) => [position.id, position.name]),
+  );
+
+  people.forEach((person) => {
+    if (person?.position_id && !names.has(person.position_id)) {
+      names.set(
+        person.position_id,
+        positionLabel(person) || "Unnamed position",
+      );
+    }
+  });
+
+  const list = [...names.entries()]
+    .map(([id, name]) => ({ id, name, count: counts.get(id) || 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return [
+    {
+      id: NO_POSITION,
+      name: "No position",
+      count: counts.get(NO_POSITION) || 0,
+    },
+    ...list,
+  ];
 }
 
 /* ---------- Shared styles ---------- */
@@ -250,6 +311,282 @@ function ModalFooter({ children }) {
   return (
     <div className="flex flex-col-reverse gap-2 border-t border-[#EEF3FB] bg-[#F7FAFE] px-6 py-4 sm:flex-row sm:justify-end sm:gap-3">
       {children}
+    </div>
+  );
+}
+
+/* ---------- Position filter (searchable multi-select) ---------- */
+
+/**
+ * options:  [{ id, name, count }]
+ * selected: array of option ids
+ *
+ * Built for long lists: type to search, arrow keys + Enter to toggle,
+ * live counts, and positions with no employees are hidden by default.
+ */
+function PositionFilter({
+  options,
+  selected,
+  onChange,
+  loading,
+  align = "right",
+  className = "sm:w-52",
+}) {
+  const listId = useId();
+
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [showEmpty, setShowEmpty] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+
+  const rootRef = useRef(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  const emptyCount = options.filter(
+    (option) => option.count === 0 && !selectedSet.has(option.id),
+  ).length;
+
+  const visibleOptions = useMemo(() => {
+    const term = q.trim().toLowerCase();
+
+    return options.filter((option) => {
+      const listed =
+        showEmpty || option.count > 0 || selectedSet.has(option.id);
+
+      return listed && (!term || option.name.toLowerCase().includes(term));
+    });
+  }, [options, q, showEmpty, selectedSet]);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const onPointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+
+  // Focus the search box when opening; reset the search when closing
+  useEffect(() => {
+    if (open) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } else {
+      setQ("");
+      setHighlight(0);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setHighlight(0);
+  }, [q, showEmpty]);
+
+  // Keep the highlighted row visible
+  useEffect(() => {
+    if (!open) return;
+
+    listRef.current
+      ?.querySelector(`[data-index="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [highlight, open]);
+
+  const toggle = (id) => {
+    onChange(
+      selectedSet.has(id)
+        ? selected.filter((item) => item !== id)
+        : [...selected, id],
+    );
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlight((current) =>
+        Math.min(visibleOptions.length - 1, current + 1),
+      );
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlight((current) => Math.max(0, current - 1));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = visibleOptions[highlight];
+      if (option) toggle(option.id);
+    } else if (event.key === "Escape") {
+      // Keep Escape from also closing a modal that contains this filter
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+    }
+  };
+
+  let label = "All positions";
+  if (selected.length === 1) {
+    label =
+      options.find((option) => option.id === selected[0])?.name || "1 position";
+  } else if (selected.length > 1) {
+    label = `${selected.length} positions`;
+  }
+
+  const active = selected.length > 0;
+
+  return (
+    <div ref={rootRef} className={`relative ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="Filter by position"
+        className={`${inputClass} flex items-center gap-2 text-left ${
+          active ? "border-[#1D63D6] bg-[#EAF1FD]/50" : ""
+        }`}
+      >
+        <BriefcaseBusiness
+          size={15}
+          className={active ? "text-[#1D63D6]" : "text-slate-400"}
+        />
+        <span
+          className={`min-w-0 flex-1 truncate ${
+            active ? "font-semibold text-[#0B3A8C]" : "text-slate-700"
+          }`}
+        >
+          {label}
+        </span>
+        <ChevronDown
+          size={15}
+          className={`shrink-0 text-slate-400 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
+      </button>
+
+      {open && (
+        <div
+          className={`absolute z-40 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[#E3EAF5] bg-white shadow-xl shadow-[#0B3A8C]/10 ${
+            align === "left" ? "left-0" : "right-0"
+          }`}
+        >
+          <div className="border-b border-[#EEF3FB] p-2.5">
+            <div className="relative">
+              <Search
+                size={15}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                ref={inputRef}
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Search positions..."
+                aria-label="Search positions"
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={listId}
+                className="h-9 w-full rounded-lg border border-[#E3EAF5] bg-white pl-9 pr-3 text-sm outline-none placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-4 focus:ring-[#1D63D6]/10"
+              />
+            </div>
+          </div>
+
+          <ul
+            id={listId}
+            ref={listRef}
+            role="listbox"
+            aria-multiselectable="true"
+            className="max-h-72 overflow-y-auto py-1"
+          >
+            {loading ? (
+              <li className="px-4 py-6 text-center text-sm text-slate-400">
+                Loading...
+              </li>
+            ) : visibleOptions.length === 0 ? (
+              <li className="px-4 py-6 text-center text-sm text-slate-500">
+                {q ? "No positions match your search." : "No positions found."}
+              </li>
+            ) : (
+              visibleOptions.map((option, index) => {
+                const checked = selectedSet.has(option.id);
+                const isNone = option.id === NO_POSITION;
+
+                return (
+                  <li
+                    key={option.id}
+                    role="option"
+                    aria-selected={checked}
+                    data-index={index}
+                    onMouseEnter={() => setHighlight(index)}
+                    onClick={() => {
+                      toggle(option.id);
+                      inputRef.current?.focus();
+                    }}
+                    className={`flex cursor-pointer items-center gap-3 px-3.5 py-2 text-sm ${
+                      highlight === index ? "bg-[#F7FAFE]" : ""
+                    }`}
+                  >
+                    <span
+                      className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border ${
+                        checked
+                          ? "border-[#1D63D6] bg-[#1D63D6] text-white"
+                          : "border-slate-300 bg-white"
+                      }`}
+                    >
+                      {checked && <Check size={12} strokeWidth={3} />}
+                    </span>
+
+                    <span
+                      className={`min-w-0 flex-1 truncate ${
+                        isNone
+                          ? "font-medium text-[#C8102E]"
+                          : option.count === 0
+                            ? "text-slate-400"
+                            : "text-slate-700"
+                      }`}
+                    >
+                      {option.name}
+                    </span>
+
+                    <span className="shrink-0 rounded-full bg-[#EEF3FB] px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                      {option.count}
+                    </span>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+
+          <div className="flex items-center justify-between gap-3 border-t border-[#EEF3FB] bg-[#F7FAFE] px-3.5 py-2.5">
+            {emptyCount > 0 || showEmpty ? (
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={showEmpty}
+                  onChange={(event) => setShowEmpty(event.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 accent-[#1D63D6]"
+                />
+                Show positions with no employees
+              </label>
+            ) : (
+              <span className="text-xs text-slate-400">
+                {visibleOptions.length} position
+                {visibleOptions.length === 1 ? "" : "s"}
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              disabled={!active}
+              className="shrink-0 text-xs font-semibold text-[#1D63D6] hover:text-[#0B3A8C] disabled:cursor-not-allowed disabled:text-slate-300"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -663,7 +1000,8 @@ function ShiftFormModal({ shift, saving, onClose, onSubmit }) {
 function AssignmentModal({
   initial,
   employees,
-  departments,
+  positionOptions,
+  labelOf,
   activeShifts,
   saving,
   onClose,
@@ -680,7 +1018,7 @@ function AssignmentModal({
   });
   const [selected, setSelected] = useState(initial.employee_ids || []);
   const [pickerSearch, setPickerSearch] = useState("");
-  const [pickerDept, setPickerDept] = useState("all");
+  const [pickerPositions, setPickerPositions] = useState([]);
   const [error, setError] = useState("");
 
   const set = (name, value) => setForm((c) => ({ ...c, [name]: value }));
@@ -691,10 +1029,11 @@ function AssignmentModal({
       !text ||
       employee.full_name?.toLowerCase().includes(text) ||
       employee.employee_number?.toLowerCase().includes(text);
-    const matchesDept =
-      pickerDept === "all" || employee.department_id === pickerDept;
+    const matchesPosition =
+      pickerPositions.length === 0 ||
+      pickerPositions.includes(positionKey(employee));
 
-    return matchesSearch && matchesDept;
+    return matchesSearch && matchesPosition;
   });
 
   const toggle = (id) =>
@@ -784,19 +1123,13 @@ function AssignmentModal({
                   placeholder="Search name or employee ID..."
                   aria-label="Search employees"
                 />
-                <select
-                  className={`${inputClass} sm:w-48`}
-                  value={pickerDept}
-                  onChange={(e) => setPickerDept(e.target.value)}
-                  aria-label="Filter by department"
-                >
-                  <option value="all">All departments</option>
-                  {departments.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                <PositionFilter
+                  options={positionOptions}
+                  selected={pickerPositions}
+                  onChange={setPickerPositions}
+                  align="right"
+                  className="sm:w-56 sm:shrink-0"
+                />
               </div>
 
               <div className="max-h-64 overflow-y-auto rounded-xl border border-[#E3EAF5]">
@@ -831,8 +1164,9 @@ function AssignmentModal({
                       <p className="truncate text-sm font-semibold text-[#0B3A8C]">
                         {employee.full_name}
                       </p>
-                      <p className="text-xs text-slate-500">
+                      <p className="truncate text-xs text-slate-500">
                         {employee.employee_number}
+                        {labelOf(employee) ? ` · ${labelOf(employee)}` : ""}
                       </p>
                     </div>
                   </label>
@@ -1008,7 +1342,7 @@ export default function ShiftsPage() {
 
   const [shifts, setShifts] = useState([]);
   const [employees, setEmployees] = useState([]);
-  const [departments, setDepartments] = useState([]);
+  const [positions, setPositions] = useState([]);
   const [assignments, setAssignments] = useState([]);
 
   const [loading, setLoading] = useState(true);
@@ -1018,7 +1352,7 @@ export default function ShiftsPage() {
 
   const [search, setSearch] = useState("");
   const [shiftStatus, setShiftStatus] = useState("active");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [positionIds, setPositionIds] = useState([]);
   const [shiftFilter, setShiftFilter] = useState("all");
   const [showHistory, setShowHistory] = useState(false);
 
@@ -1043,19 +1377,34 @@ export default function ShiftsPage() {
     setError("");
 
     try {
-      const [shiftRes, referenceRes, assignmentRes] = await Promise.all([
-        api.get("/shifts", { params: { status: "all" } }),
-        api.get("/shifts/references"),
-        api.get("/shifts/assignments", {
-          params: { history: showHistory ? "true" : "false" },
-        }),
-      ]);
+      const [shiftRes, referenceRes, assignmentRes, employeeRefRes] =
+        await Promise.all([
+          api.get("/shifts", { params: { status: "all" } }),
+          api.get("/shifts/references"),
+          api.get("/shifts/assignments", {
+            params: { history: showHistory ? "true" : "false" },
+          }),
+          // Position names. Optional: the page still works if this fails.
+          api.get("/employees/references").catch(() => null),
+        ]);
 
       const references = referenceRes.data?.data || {};
 
+      // Merge position lists from both endpoints (unique by id)
+      const mergedPositions = new Map();
+
+      [
+        ...(references.positions || []),
+        ...(employeeRefRes?.data?.data?.positions || []),
+      ].forEach((position) => {
+        if (position?.id && !mergedPositions.has(position.id)) {
+          mergedPositions.set(position.id, position);
+        }
+      });
+
       setShifts(shiftRes.data?.data || []);
       setEmployees(references.employees || []);
-      setDepartments(references.departments || []);
+      setPositions([...mergedPositions.values()]);
       setAssignments(assignmentRes.data?.data || []);
     } catch (err) {
       setError(getApiError(err));
@@ -1128,41 +1477,96 @@ export default function ShiftsPage() {
 
   const text = search.trim().toLowerCase();
 
-  const filteredAssignments = useMemo(
+  // Assignments after the shift and search filters (position not applied yet),
+  // so the position counts reflect what the other filters leave.
+  const baseAssignments = useMemo(
     () =>
       assignments.filter((a) => {
         const matchesShift =
           shiftFilter === "all" || a.shift_id === shiftFilter;
-        const matchesDept =
-          departmentFilter === "all" ||
-          a.employee?.department_id === departmentFilter;
         const matchesSearch =
           !text ||
           a.employee?.full_name?.toLowerCase().includes(text) ||
           a.employee?.employee_number?.toLowerCase().includes(text) ||
           a.shift?.name?.toLowerCase().includes(text);
 
-        return matchesShift && matchesDept && matchesSearch;
+        return matchesShift && matchesSearch;
       }),
-    [assignments, shiftFilter, departmentFilter, text],
+    [assignments, shiftFilter, text],
+  );
+
+  const baseUnassigned = useMemo(
+    () =>
+      shiftFilter !== "all"
+        ? []
+        : unassigned.filter(
+            (e) =>
+              !text ||
+              e.full_name?.toLowerCase().includes(text) ||
+              e.employee_number?.toLowerCase().includes(text),
+          ),
+    [unassigned, shiftFilter, text],
+  );
+
+  const wantedPositions = useMemo(() => new Set(positionIds), [positionIds]);
+
+  const filteredAssignments = useMemo(
+    () =>
+      positionIds.length === 0
+        ? baseAssignments
+        : baseAssignments.filter((a) =>
+            wantedPositions.has(positionKey(a.employee)),
+          ),
+    [baseAssignments, positionIds, wantedPositions],
   );
 
   const filteredUnassigned = useMemo(
     () =>
-      shiftFilter !== "all"
-        ? []
-        : unassigned.filter((e) => {
-            const matchesDept =
-              departmentFilter === "all" ||
-              e.department_id === departmentFilter;
-            const matchesSearch =
-              !text ||
-              e.full_name?.toLowerCase().includes(text) ||
-              e.employee_number?.toLowerCase().includes(text);
+      positionIds.length === 0
+        ? baseUnassigned
+        : baseUnassigned.filter((e) => wantedPositions.has(positionKey(e))),
+    [baseUnassigned, positionIds, wantedPositions],
+  );
 
-            return matchesDept && matchesSearch;
-          }),
-    [unassigned, shiftFilter, departmentFilter, text],
+  // Everyone we know about, used to discover position names
+  const knownPeople = useMemo(
+    () => [...employees, ...assignments.map((a) => a.employee)].filter(Boolean),
+    [employees, assignments],
+  );
+
+  // Position options for the Assignments filter (counts = unique employees)
+  const positionOptions = useMemo(() => {
+    const sets = new Map();
+
+    const add = (employeeId, person) => {
+      const key = positionKey(person);
+      if (!sets.has(key)) sets.set(key, new Set());
+      sets.get(key).add(employeeId);
+    };
+
+    baseAssignments.forEach((a) => add(a.employee_id, a.employee));
+    baseUnassigned.forEach((e) => add(e.id, e));
+
+    const counts = new Map([...sets].map(([key, ids]) => [key, ids.size]));
+
+    return buildPositionOptions(positions, knownPeople, counts);
+  }, [positions, knownPeople, baseAssignments, baseUnassigned]);
+
+  // Position options for the bulk-assign picker (counts across all employees)
+  const modalPositionOptions = useMemo(() => {
+    const counts = new Map();
+
+    employees.forEach((employee) => {
+      const key = positionKey(employee);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    return buildPositionOptions(positions, knownPeople, counts);
+  }, [positions, knownPeople, employees]);
+
+  const positionNameById = useMemo(
+    () => new Map(positionOptions.map((option) => [option.id, option.name])),
+    [positionOptions],
   );
 
   const groups = useMemo(() => {
@@ -1175,6 +1579,16 @@ export default function ShiftsPage() {
       .filter((s) => byShift.has(s.id))
       .map((shift) => ({ shift, rows: byShift.get(shift.id) }));
   }, [filteredAssignments, shifts]);
+
+  const positionNames = useMemo(
+    () => new Map(positions.map((position) => [position.id, position.name])),
+    [positions],
+  );
+
+  const labelOf = useCallback(
+    (person) => positionLabel(person, positionNames),
+    [positionNames],
+  );
 
   const nowPct = (nowMinutes / 1440) * 100;
 
@@ -1293,9 +1707,13 @@ export default function ShiftsPage() {
     });
 
   const hasAssignmentFilters =
-    Boolean(search.trim()) ||
-    departmentFilter !== "all" ||
-    shiftFilter !== "all";
+    Boolean(search.trim()) || positionIds.length > 0 || shiftFilter !== "all";
+
+  const clearAssignmentFilters = () => {
+    setSearch("");
+    setPositionIds([]);
+    setShiftFilter("all");
+  };
 
   const kpis = [
     {
@@ -1445,7 +1863,7 @@ export default function ShiftsPage() {
       </section>
 
       {/* Tabs + filters */}
-      <section className="space-y-4">
+      <section className="space-y-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div
             role="tablist"
@@ -1495,19 +1913,12 @@ export default function ShiftsPage() {
 
             {tab === "assignments" && (
               <>
-                <select
-                  value={departmentFilter}
-                  onChange={(e) => setDepartmentFilter(e.target.value)}
-                  aria-label="Filter by department"
-                  className={`${inputClass} sm:w-44`}
-                >
-                  <option value="all">All departments</option>
-                  {departments.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                <PositionFilter
+                  options={positionOptions}
+                  selected={positionIds}
+                  onChange={setPositionIds}
+                  loading={loading}
+                />
 
                 <select
                   value={shiftFilter}
@@ -1540,11 +1951,7 @@ export default function ShiftsPage() {
                 {hasAssignmentFilters && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setSearch("");
-                      setDepartmentFilter("all");
-                      setShiftFilter("all");
-                    }}
+                    onClick={clearAssignmentFilters}
                     className="inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
                   >
                     <X size={13} />
@@ -1581,6 +1988,36 @@ export default function ShiftsPage() {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* Selected position chips */}
+        {tab === "assignments" && positionIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">
+              Position:
+            </span>
+
+            {positionIds.map((id) => (
+              <span
+                key={id}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#CFE0FA] bg-[#EAF1FD] py-1 pl-3 pr-1.5 text-xs font-semibold text-[#0B3A8C]"
+              >
+                {positionNameById.get(id) || "Position"}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPositionIds((current) =>
+                      current.filter((item) => item !== id),
+                    )
+                  }
+                  aria-label={`Remove ${positionNameById.get(id) || "position"} filter`}
+                  className="rounded-full p-0.5 text-[#1D63D6] transition hover:bg-white"
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
           </div>
         )}
       </section>
@@ -1765,8 +2202,9 @@ export default function ShiftsPage() {
                       <p className="truncate text-sm font-semibold text-[#0B3A8C]">
                         {employee.full_name}
                       </p>
-                      <p className="text-xs text-slate-500">
+                      <p className="truncate text-xs text-slate-500">
                         {employee.employee_number}
+                        {labelOf(employee) ? ` · ${labelOf(employee)}` : ""}
                       </p>
                     </div>
                     <button
@@ -1803,7 +2241,15 @@ export default function ShiftsPage() {
                   ? "Try changing your search or filters."
                   : "Assign employees to a shift to see their schedules here."}
               </p>
-              {!hasAssignmentFilters && (
+              {hasAssignmentFilters ? (
+                <button
+                  type="button"
+                  onClick={clearAssignmentFilters}
+                  className="mt-5 text-sm font-semibold text-[#1D63D6] hover:text-[#0B3A8C]"
+                >
+                  Clear filters
+                </button>
+              ) : (
                 <button
                   type="button"
                   onClick={() => openAssign()}
@@ -1860,6 +2306,7 @@ export default function ShiftsPage() {
                     <ul className="divide-y divide-[#EEF3FB] border-t border-[#EEF3FB]">
                       {rows.map((assignment) => {
                         const state = assignmentState(assignment, today);
+                        const position = labelOf(assignment.employee);
 
                         return (
                           <li
@@ -1881,10 +2328,10 @@ export default function ShiftsPage() {
                               </div>
                             </div>
 
-                            <p className="text-sm text-slate-600">
-                              {assignment.department?.name || (
+                            <p className="truncate text-sm text-slate-600">
+                              {position || (
                                 <span className="text-slate-400">
-                                  Unassigned
+                                  No position
                                 </span>
                               )}
                             </p>
@@ -1945,7 +2392,8 @@ export default function ShiftsPage() {
         <AssignmentModal
           initial={assignModal}
           employees={employees}
-          departments={departments}
+          positionOptions={modalPositionOptions}
+          labelOf={labelOf}
           activeShifts={activeShifts}
           saving={saving}
           onClose={() => setAssignModal(null)}

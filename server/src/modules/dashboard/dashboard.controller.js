@@ -63,6 +63,7 @@ function emptySummary(date) {
       employees: [],
     },
     departments: [],
+    positions: [],
     recent_activities: [],
   };
 }
@@ -119,6 +120,7 @@ export async function getDashboardSummary(req, res) {
         last_name,
         suffix,
         department_id,
+        position_id,
         employment_status
       `,
       )
@@ -154,7 +156,7 @@ export async function getDashboardSummary(req, res) {
       });
     }
 
-    const [attendanceResult, activeBreakResult, eventsResult] =
+    const [attendanceResult, activeBreakResult, eventsResult, positionResult] =
       await Promise.all([
         supabaseAdmin
           .from("attendance_records")
@@ -211,15 +213,19 @@ export async function getDashboardSummary(req, res) {
           .lt("created_at", end)
           .order("created_at", { ascending: false })
           .limit(12),
+
+        supabaseAdmin.from("positions").select("id, name").order("name"),
       ]);
 
     if (attendanceResult.error) throw attendanceResult.error;
     if (activeBreakResult.error) throw activeBreakResult.error;
     if (eventsResult.error) throw eventsResult.error;
+    if (positionResult.error) throw positionResult.error;
 
     const attendanceRecords = attendanceResult.data || [];
     const activeBreaks = activeBreakResult.data || [];
     const events = eventsResult.data || [];
+    const positionRows = positionResult.data || [];
 
     const employeeMap = new Map(
       employeeList.map((employee) => [employee.id, employee]),
@@ -227,6 +233,10 @@ export async function getDashboardSummary(req, res) {
 
     const attendanceMap = new Map(
       attendanceRecords.map((record) => [record.employee_id, record]),
+    );
+
+    const positionNameMap = new Map(
+      positionRows.map((position) => [position.id, position.name]),
     );
 
     const attendance = {
@@ -306,6 +316,65 @@ export async function getDashboardSummary(req, res) {
       };
     });
 
+    // Attendance per position (same counting rules as departments).
+    // Employees without a position are grouped as "No position".
+    const positionBuckets = new Map();
+
+    const bucketFor = (positionId) => {
+      const key = positionId || "none";
+
+      if (!positionBuckets.has(key)) {
+        positionBuckets.set(key, {
+          id: positionId || null,
+          name: positionId
+            ? positionNameMap.get(positionId) || "Unnamed position"
+            : "No position",
+          total_employees: 0,
+          present: 0,
+          absent: 0,
+          no_attendance: 0,
+          on_break: 0,
+          overbreak: 0,
+        });
+      }
+
+      return positionBuckets.get(key);
+    };
+
+    for (const employee of employeeList) {
+      const bucket = bucketFor(employee.position_id);
+      const record = attendanceMap.get(employee.id);
+
+      bucket.total_employees += 1;
+
+      if (!record) {
+        bucket.no_attendance += 1;
+      } else if (["present", "late", "half_day"].includes(record.status)) {
+        bucket.present += 1;
+      } else if (record.status === "absent") {
+        bucket.absent += 1;
+      }
+    }
+
+    for (const item of activeBreaks) {
+      const employee = employeeMap.get(item.employee_id);
+      if (!employee) continue;
+
+      const bucket = bucketFor(employee.position_id);
+      bucket.on_break += 1;
+
+      if (Number(item.current_excess_minutes || 0) > 0) {
+        bucket.overbreak += 1;
+      }
+    }
+
+    const positionSummary = [...positionBuckets.values()].sort(
+      (a, b) =>
+        b.present - a.present ||
+        b.total_employees - a.total_employees ||
+        a.name.localeCompare(b.name),
+    );
+
     const formattedBreaks = activeBreaks.map((item) => ({
       ...item,
       employee_name: getEmployeeName(item),
@@ -352,6 +421,8 @@ export async function getDashboardSummary(req, res) {
         },
 
         departments: departmentSummary,
+
+        positions: positionSummary,
 
         recent_activities: recentActivities,
       },

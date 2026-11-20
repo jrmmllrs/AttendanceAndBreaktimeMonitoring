@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  ArrowUpDown,
   Building2,
   CheckCircle2,
   LoaderCircle,
@@ -9,7 +10,6 @@ import {
   Power,
   RefreshCw,
   Search,
-  UserCog,
   Users,
   X,
 } from "lucide-react";
@@ -20,20 +20,38 @@ import { api, getApiError } from "../../lib/api";
  *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
  *   Red #C8102E · Light red #FDECEF · Border #E3EAF5
  *
- * Layout (same as Shifts):
- *  - Summary strip on top.
- *  - Left: "RCS - RR by department" list with headcount bars.
- *  - Right: sticky detail panel for the selected department
- *    (supervisor + employee roster), replacing the old details modal.
- *  - Departments with no supervisor are flagged in red.
+ * Layout:
+ *  - Summary strip on top (the "Empty" card is clickable and filters the list).
+ *  - Left: compact, sortable department list with headcount bars. It scrolls
+ *    on its own, and ↑ / ↓ moves the selection.
+ *  - Right: sticky detail panel for the selected department, with a roster
+ *    that can be searched and filtered, and shows 8 people at a time.
+ *  - Active departments with no employees are flagged in red.
+ *
+ * The supervisor display was hidden in the previous version, so it is left
+ * out here. The supervisor field in the form is unchanged.
  */
 
 const EMPTY_FORM = { name: "", description: "", supervisor_profile_id: "" };
+
+const ROSTER_PREVIEW = 8;
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All" },
   { value: "active", label: "Active" },
   { value: "inactive", label: "Inactive" },
+];
+
+const SORT_OPTIONS = [
+  { value: "name", label: "Name (A–Z)" },
+  { value: "most", label: "Most employees" },
+  { value: "fewest", label: "Fewest employees" },
+];
+
+const ROSTER_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "active", label: "Active" },
+  { value: "other", label: "Other" },
 ];
 
 /* ---------- Helpers ---------- */
@@ -70,10 +88,9 @@ function fullName(employee) {
     .join(" ");
 }
 
-const needsSupervisor = (department) =>
-  department.is_active &&
-  !department.supervisor_profile_id &&
-  !department.supervisor;
+// Active department that nobody has been assigned to yet
+const isEmptyDepartment = (department) =>
+  department.is_active && (department.employee_count || 0) === 0;
 
 /* ---------- Shared styles ---------- */
 
@@ -112,7 +129,7 @@ function Pill({ tone = "blue", children }) {
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${tones[tone]}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ${tones[tone]}`}
     >
       {children}
     </span>
@@ -193,6 +210,21 @@ function ModalFooter({ children }) {
   );
 }
 
+function ListSkeleton() {
+  return (
+    <div className="animate-pulse divide-y divide-[#EEF3FB]">
+      {[1, 2, 3, 4, 5, 6].map((row) => (
+        <div key={row} className="flex items-center gap-4 px-5 py-3.5">
+          <div className="h-9 w-9 rounded-xl bg-[#EEF3FB]" />
+          <div className="h-3.5 w-40 rounded bg-[#EEF3FB]" />
+          <div className="h-2 flex-1 rounded-full bg-[#EEF3FB]" />
+          <div className="h-3.5 w-12 rounded bg-[#EEF3FB]" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ---------- Headcount bar ---------- */
 
 function HeadcountBar({ total, active, max }) {
@@ -201,7 +233,7 @@ function HeadcountBar({ total, active, max }) {
 
   return (
     <div
-      className="h-3 overflow-hidden rounded-full bg-[#EEF3FB]"
+      className="h-2 overflow-hidden rounded-full bg-[#EEF3FB]"
       role="img"
       aria-label={`${active} active of ${total} employees`}
     >
@@ -209,7 +241,10 @@ function HeadcountBar({ total, active, max }) {
         className="flex h-full overflow-hidden rounded-full bg-slate-300 transition-all duration-500"
         style={{ width: `${width}%` }}
       >
-        <div className="h-full bg-[#1D63D6]" style={{ width: `${activePct}%` }} />
+        <div
+          className="h-full bg-[#1D63D6]"
+          style={{ width: `${activePct}%` }}
+        />
       </div>
     </div>
   );
@@ -217,10 +252,20 @@ function HeadcountBar({ total, active, max }) {
 
 /* ---------- Detail panel ---------- */
 
-function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
+function DepartmentDetail({
+  department,
+  refreshKey,
+  panelRef,
+  onEdit,
+  onToggle,
+}) {
   const [details, setDetails] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const [rosterSearch, setRosterSearch] = useState("");
+  const [rosterFilter, setRosterFilter] = useState("all");
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -247,11 +292,40 @@ function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
     };
   }, [department.id, refreshKey]);
 
-  const supervisor = details?.supervisor || department.supervisor;
-  const employees = details?.employees || [];
+  const employees = useMemo(() => details?.employees || [], [details]);
+
+  const filtered = useMemo(() => {
+    const term = rosterSearch.trim().toLowerCase();
+
+    return employees.filter((employee) => {
+      const isActive = employee.employment_status === "active";
+
+      if (rosterFilter === "active" && !isActive) return false;
+      if (rosterFilter === "other" && isActive) return false;
+
+      if (!term) return true;
+
+      return [
+        fullName(employee),
+        employee.employee_number,
+        employee.position_name,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(term);
+    });
+  }, [employees, rosterSearch, rosterFilter]);
+
+  const rows = showAll ? filtered : filtered.slice(0, ROSTER_PREVIEW);
+  const hiddenCount = filtered.length - rows.length;
+  const rosterFiltered = Boolean(rosterSearch.trim()) || rosterFilter !== "all";
 
   return (
-    <aside className={`${cardClass} overflow-hidden xl:sticky xl:top-4`}>
+    <aside
+      ref={panelRef}
+      className={`${cardClass} scroll-mt-4 overflow-hidden xl:sticky xl:top-4`}
+    >
       <Ribbon tab="w-16" />
 
       <div className="space-y-5 p-5">
@@ -302,47 +376,15 @@ function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
           </div>
         </dl>
 
-        <div>
-          <p className="mb-2 text-xs font-semibold text-slate-500">
-            Supervisor
-          </p>
-
-          {/* {supervisor ? (
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#1D63D6] text-sm font-semibold text-white">
-                {initials(supervisor.full_name)}
-              </div>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                  {supervisor.full_name}
-                </p>
-                <p className="truncate text-xs text-slate-500">
-                  {supervisor.email}
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between gap-3 rounded-xl border border-[#F5C2CA] bg-[#FDECEF] px-3 py-2.5">
-              <p className="text-sm font-medium text-[#8E0B20]">
-                No supervisor assigned
-              </p>
-              <button
-                type="button"
-                onClick={onEdit}
-                className="text-xs font-semibold text-[#C8102E] hover:underline"
-              >
-                Assign
-              </button>
-            </div>
-          )} */}
-        </div>
-
+        {/* Roster */}
         <div>
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold text-slate-500">Employees</p>
             {!loading && !error && (
               <span className="text-xs text-slate-400">
-                {employees.length} record{employees.length === 1 ? "" : "s"}
+                {rosterFiltered
+                  ? `${filtered.length} of ${employees.length}`
+                  : `${employees.length} record${employees.length === 1 ? "" : "s"}`}
               </span>
             )}
           </div>
@@ -360,40 +402,123 @@ function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
               <p className="mt-2 text-sm font-medium text-slate-600">
                 No employees assigned yet
               </p>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Assign people from the Employees page.
+              </p>
             </div>
           ) : (
-            <ul className="max-h-72 divide-y divide-[#EEF3FB] overflow-y-auto rounded-xl border border-[#E3EAF5]">
-              {employees.map((employee) => (
-                <li
-                  key={employee.id}
-                  className="flex items-center gap-3 px-3 py-2.5"
-                >
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#EAF1FD] text-[10px] font-bold text-[#1D63D6]">
-                    {initials(fullName(employee))}
+            <div className="space-y-2.5">
+              {employees.length > ROSTER_PREVIEW && (
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search
+                      size={15}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                    />
+                    <input
+                      value={rosterSearch}
+                      onChange={(e) => setRosterSearch(e.target.value)}
+                      placeholder="Search name, ID or position..."
+                      aria-label="Search employees in this department"
+                      className="h-9 w-full rounded-lg border border-[#E3EAF5] bg-white pl-9 pr-8 text-sm outline-none placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-4 focus:ring-[#1D63D6]/10"
+                    />
+                    {rosterSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setRosterSearch("")}
+                        aria-label="Clear search"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                      {fullName(employee)}
-                    </p>
-                    <p className="truncate text-xs text-slate-500">
-                      {employee.employee_number}
-                      {employee.position_name
-                        ? ` · ${employee.position_name}`
-                        : ""}
-                    </p>
-                  </div>
-                  <Pill
-                    tone={
-                      employee.employment_status === "active" ? "blue" : "gray"
-                    }
+
+                  <div
+                    className="flex gap-1.5"
+                    role="group"
+                    aria-label="Filter employees by status"
                   >
-                    <span className="capitalize">
-                      {employee.employment_status}
-                    </span>
-                  </Pill>
-                </li>
-              ))}
-            </ul>
+                    {ROSTER_FILTERS.map((option) => {
+                      const active = rosterFilter === option.value;
+
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setRosterFilter(option.value)}
+                          aria-pressed={active}
+                          className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                            active
+                              ? "border-[#1D63D6] bg-[#1D63D6] text-white"
+                              : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {filtered.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-[#D5E3F8] py-6 text-center text-sm text-slate-500">
+                  No employees match.
+                </p>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-[#E3EAF5]">
+                  <ul
+                    className={`divide-y divide-[#EEF3FB] ${
+                      showAll ? "max-h-80 overflow-y-auto" : ""
+                    }`}
+                  >
+                    {rows.map((employee) => (
+                      <li
+                        key={employee.id}
+                        className="flex items-center gap-3 px-3 py-2"
+                      >
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#EAF1FD] text-[10px] font-bold text-[#1D63D6]">
+                          {initials(fullName(employee))}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                            {fullName(employee)}
+                          </p>
+                          <p className="truncate text-xs text-slate-500">
+                            {employee.employee_number}
+                            {employee.position_name
+                              ? ` · ${employee.position_name}`
+                              : ""}
+                          </p>
+                        </div>
+                        <Pill
+                          tone={
+                            employee.employment_status === "active"
+                              ? "blue"
+                              : "gray"
+                          }
+                        >
+                          <span className="capitalize">
+                            {employee.employment_status}
+                          </span>
+                        </Pill>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {filtered.length > ROSTER_PREVIEW && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAll((current) => !current)}
+                      className="w-full border-t border-[#EEF3FB] bg-[#F7FAFE] py-2 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+                    >
+                      {showAll ? "Show less" : `Show ${hiddenCount} more`}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -561,7 +686,11 @@ function ConfirmStatusModal({ department, busy, onClose, onConfirm }) {
               : "bg-[#EAF1FD] text-[#1D63D6]"
           }`}
         >
-          {deactivating ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+          {deactivating ? (
+            <AlertCircle size={20} />
+          ) : (
+            <CheckCircle2 size={20} />
+          )}
         </div>
 
         <p className="text-sm leading-6 text-slate-600">
@@ -615,7 +744,8 @@ export default function DepartmentsPage() {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [onlyNeedsSupervisor, setOnlyNeedsSupervisor] = useState(false);
+  const [sortBy, setSortBy] = useState("name");
+  const [onlyEmpty, setOnlyEmpty] = useState(false);
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -625,6 +755,9 @@ export default function DepartmentsPage() {
 
   const [formModal, setFormModal] = useState(null); // { department } | null
   const [statusDepartment, setStatusDepartment] = useState(null);
+
+  const listRef = useRef(null);
+  const panelRef = useRef(null);
 
   // Debounce search so we don't refetch on every keystroke.
   useEffect(() => {
@@ -671,23 +804,37 @@ export default function DepartmentsPage() {
 
   const stats = useMemo(() => {
     const active = departments.filter((d) => d.is_active);
+    const activeEmployees = departments.reduce(
+      (sum, d) => sum + (d.active_employee_count || 0),
+      0,
+    );
 
     return {
       total: departments.length,
       active: active.length,
-      employees: departments.reduce(
-        (sum, d) => sum + (d.active_employee_count || 0),
-        0,
-      ),
-      missing: active.filter(needsSupervisor).length,
+      employees: activeEmployees,
+      average: active.length ? Math.round(activeEmployees / active.length) : 0,
+      empty: active.filter(isEmptyDepartment).length,
     };
   }, [departments]);
 
-  const visible = useMemo(
-    () =>
-      onlyNeedsSupervisor ? departments.filter(needsSupervisor) : departments,
-    [departments, onlyNeedsSupervisor],
-  );
+  const visible = useMemo(() => {
+    const list = onlyEmpty
+      ? departments.filter(isEmptyDepartment)
+      : [...departments];
+
+    list.sort((a, b) => {
+      if (sortBy === "most") {
+        return (b.employee_count || 0) - (a.employee_count || 0);
+      }
+      if (sortBy === "fewest") {
+        return (a.employee_count || 0) - (b.employee_count || 0);
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+    return list;
+  }, [departments, onlyEmpty, sortBy]);
 
   const maxCount = useMemo(
     () => Math.max(1, ...departments.map((d) => d.employee_count || 0)),
@@ -697,12 +844,47 @@ export default function DepartmentsPage() {
   const selected =
     visible.find((d) => d.id === selectedId) || visible[0] || null;
 
-  const hasFilters = Boolean(search.trim()) || status !== "all" || onlyNeedsSupervisor;
+  const hasFilters = Boolean(search.trim()) || status !== "all" || onlyEmpty;
 
   function resetFilters() {
     setSearch("");
     setStatus("all");
-    setOnlyNeedsSupervisor(false);
+    setOnlyEmpty(false);
+  }
+
+  /* ----- Selection ----- */
+
+  function selectDepartment(id) {
+    setSelectedId(id);
+
+    // On narrow screens the panel is below the list, so bring it into view.
+    if (window.innerWidth < 1280) {
+      requestAnimationFrame(() =>
+        panelRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        }),
+      );
+    }
+  }
+
+  function handleListKeyDown(event) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+    event.preventDefault();
+
+    const index = visible.findIndex((item) => item.id === selected?.id);
+    const nextIndex = Math.min(
+      visible.length - 1,
+      Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)),
+    );
+    const next = visible[nextIndex];
+
+    if (!next) return;
+
+    setSelectedId(next.id);
+
+    listRef.current?.querySelector(`[data-id="${next.id}"]`)?.focus();
   }
 
   /* ----- Actions ----- */
@@ -766,15 +948,17 @@ export default function DepartmentsPage() {
       detail: "Across all departments",
     },
     {
-      label: "Supervised",
-      value: stats.active - stats.missing,
-      detail: `of ${stats.active} active departments`,
+      label: "Average team size",
+      value: stats.average,
+      detail: "Per active department",
     },
     {
-      label: "Need a supervisor",
-      value: stats.missing,
-      detail: "Active, no supervisor",
-      alert: stats.missing > 0,
+      label: "Empty departments",
+      value: stats.empty,
+      detail: stats.empty > 0 ? "Click to review" : "Everyone is assigned",
+      alert: stats.empty > 0,
+      onClick: stats.empty > 0 ? () => setOnlyEmpty((v) => !v) : undefined,
+      pressed: onlyEmpty,
     },
   ];
 
@@ -792,7 +976,7 @@ export default function DepartmentsPage() {
               Departments
             </h1>
             <p className="mt-1 text-sm text-slate-500">
-              Organize your warehouse teams, supervisors, and RCS - RR.
+              Organize your warehouse teams and RCS - RR.
             </p>
           </div>
 
@@ -853,107 +1037,145 @@ export default function DepartmentsPage() {
       {/* Summary strip */}
       <section
         aria-label="Summary"
-        className={`${cardClass} grid grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-[#EEF3FB]`}
+        className={`${cardClass} grid grid-cols-2 overflow-hidden lg:grid-cols-4 lg:divide-x lg:divide-[#EEF3FB]`}
       >
-        {kpis.map(({ label, value, detail, alert }, index) => (
-          <div
-            key={label}
-            className={`p-5 ${index % 2 === 1 ? "border-l border-[#EEF3FB] lg:border-l-0" : ""} ${
-              index > 1 ? "border-t border-[#EEF3FB] lg:border-t-0" : ""
-            }`}
-          >
-            <p className="text-xs font-medium text-slate-500">{label}</p>
-            <p
-              className={`mt-1 text-2xl font-semibold tracking-tight ${
-                alert ? "text-[#C8102E]" : "text-[#0B3A8C]"
-              }`}
-            >
-              {loading ? "—" : value}
-            </p>
-            <p className="mt-0.5 text-xs text-slate-400">{detail}</p>
-          </div>
-        ))}
+        {kpis.map(
+          ({ label, value, detail, alert, onClick, pressed }, index) => {
+            const classes = `p-5 text-left ${
+              index % 2 === 1 ? "border-l border-[#EEF3FB] lg:border-l-0" : ""
+            } ${index > 1 ? "border-t border-[#EEF3FB] lg:border-t-0" : ""}`;
+
+            const body = (
+              <>
+                <p className="text-xs font-medium text-slate-500">{label}</p>
+                <p
+                  className={`mt-1 text-2xl font-semibold tracking-tight ${
+                    alert ? "text-[#C8102E]" : "text-[#0B3A8C]"
+                  }`}
+                >
+                  {loading ? "—" : value}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-400">{detail}</p>
+              </>
+            );
+
+            return onClick ? (
+              <button
+                key={label}
+                type="button"
+                onClick={onClick}
+                aria-pressed={pressed}
+                className={`${classes} transition hover:bg-[#FDECEF]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#C8102E] ${
+                  pressed ? "bg-[#FDECEF]" : ""
+                }`}
+              >
+                {body}
+              </button>
+            ) : (
+              <div key={label} className={classes}>
+                {body}
+              </div>
+            );
+          },
+        )}
       </section>
 
       {/* Filters */}
-      <section className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div
-            className="flex gap-2 overflow-x-auto pb-0.5"
-            role="group"
-            aria-label="Filter by status"
-          >
-            {STATUS_OPTIONS.map((option) => {
-              const active = status === option.value;
+      <section className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div
+          className="flex gap-2 overflow-x-auto pb-0.5"
+          role="group"
+          aria-label="Filter by status"
+        >
+          {STATUS_OPTIONS.map((option) => {
+            const active = status === option.value;
 
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setStatus(option.value)}
-                  aria-pressed={active}
-                  className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
-                    active
-                      ? "border-[#1D63D6] bg-[#1D63D6] text-white"
-                      : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-
-            {/* <button
-              type="button"
-              onClick={() => setOnlyNeedsSupervisor((v) => !v)}
-              aria-pressed={onlyNeedsSupervisor}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8102E] ${
-                onlyNeedsSupervisor
-                  ? "border-[#C8102E] bg-[#C8102E] text-white"
-                  : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#C8102E] hover:text-[#C8102E]"
-              }`}
-            >
-              <UserCog size={13} />
-              Needs supervisor
-            </button> */}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="relative w-full sm:w-64">
-              <Search
-                size={17}
-                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search departments..."
-                aria-label="Search departments"
-                className={`${inputClass} pl-10`}
-              />
-            </div>
-
-            {hasFilters && (
+            return (
               <button
+                key={option.value}
                 type="button"
-                onClick={resetFilters}
-                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+                onClick={() => setStatus(option.value)}
+                aria-pressed={active}
+                className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
+                  active
+                    ? "border-[#1D63D6] bg-[#1D63D6] text-white"
+                    : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
+                }`}
               >
-                <X size={13} />
-                Clear
+                {option.label}
               </button>
-            )}
+            );
+          })}
+
+          <button
+            type="button"
+            onClick={() => setOnlyEmpty((v) => !v)}
+            aria-pressed={onlyEmpty}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#C8102E] ${
+              onlyEmpty
+                ? "border-[#C8102E] bg-[#C8102E] text-white"
+                : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#C8102E] hover:text-[#C8102E]"
+            }`}
+          >
+            <Users size={13} />
+            Empty only
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="relative sm:w-64">
+            <Search
+              size={17}
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search departments..."
+              aria-label="Search departments"
+              className={`${inputClass} pl-10`}
+            />
           </div>
+
+          <div className="relative sm:w-48">
+            <ArrowUpDown
+              size={15}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              aria-label="Sort departments"
+              className={`${inputClass} pl-9`}
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {hasFilters && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#1D63D6] transition hover:bg-[#EAF1FD]"
+            >
+              <X size={13} />
+              Clear
+            </button>
+          )}
         </div>
       </section>
 
       {/* Content */}
       {loading ? (
-        <div
-          className={`${cardClass} flex min-h-64 items-center justify-center gap-3 text-sm text-slate-500`}
-        >
-          <LoaderCircle size={20} className="animate-spin text-[#1D63D6]" />
-          Loading departments...
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <div className={`${cardClass} overflow-hidden`}>
+            <ListSkeleton />
+          </div>
+          <div className={`${cardClass} hidden h-80 animate-pulse xl:block`} />
         </div>
       ) : visible.length === 0 ? (
         <div className={`${cardClass} px-6 py-20 text-center`}>
@@ -992,13 +1214,13 @@ export default function DepartmentsPage() {
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
           {/* RCS - RR list */}
           <div className={`${cardClass} overflow-hidden`}>
-            <div className="flex items-center justify-between border-b border-[#EEF3FB] px-5 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#EEF3FB] px-5 py-3.5">
               <div>
                 <h2 className="text-base font-semibold text-[#0B3A8C]">
                   RCS - RR by department
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Select a department to see its team.
+                  Select a department to see its team. Use ↑ ↓ to move.
                 </p>
               </div>
 
@@ -1014,18 +1236,23 @@ export default function DepartmentsPage() {
               </div>
             </div>
 
-            <ul className="divide-y divide-[#EEF3FB]">
+            <ul
+              ref={listRef}
+              onKeyDown={handleListKeyDown}
+              className="divide-y divide-[#EEF3FB] xl:max-h-[calc(100vh-22rem)] xl:min-h-[320px] xl:overflow-y-auto"
+            >
               {visible.map((department) => {
                 const isSelected = selected?.id === department.id;
-                const missing = needsSupervisor(department);
+                const empty = isEmptyDepartment(department);
 
                 return (
                   <li key={department.id}>
                     <button
                       type="button"
-                      onClick={() => setSelectedId(department.id)}
+                      data-id={department.id}
+                      onClick={() => selectDepartment(department.id)}
                       aria-pressed={isSelected}
-                      className={`grid w-full gap-3 border-l-4 px-5 py-4 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[240px_minmax(0,1fr)_90px] md:items-center md:gap-5 ${
+                      className={`grid w-full gap-2 border-l-4 px-5 py-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6] md:grid-cols-[minmax(0,240px)_minmax(0,1fr)_84px] md:items-center md:gap-5 ${
                         isSelected
                           ? "border-[#1D63D6] bg-[#EAF1FD]/60"
                           : "border-transparent hover:bg-[#F7FAFE]"
@@ -1033,39 +1260,23 @@ export default function DepartmentsPage() {
                     >
                       <div className="flex min-w-0 items-center gap-3">
                         <div
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
                             department.is_active
                               ? "bg-[#EAF1FD] text-[#1D63D6]"
                               : "bg-slate-100 text-slate-400"
                           }`}
                         >
-                          <Building2 size={19} />
+                          <Building2 size={17} />
                         </div>
 
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                              {department.name}
-                            </p>
-                            {!department.is_active && (
-                              <Pill tone="gray">Inactive</Pill>
-                            )}
-                          </div>
-{/* 
-                          {department.supervisor ? (
-                            <p className="mt-0.5 truncate text-xs text-slate-500">
-                              {department.supervisor.full_name}
-                            </p>
-                          ) : missing ? (
-                            <p className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-[#C8102E]">
-                              <AlertCircle size={11} />
-                              No supervisor
-                            </p>
-                          ) : (
-                            <p className="mt-0.5 text-xs text-slate-400">
-                              Unassigned
-                            </p>
-                          )} */}
+                        <div className="flex min-w-0 items-center gap-2">
+                          <p className="truncate text-sm font-semibold text-[#0B3A8C]">
+                            {department.name}
+                          </p>
+                          {!department.is_active && (
+                            <Pill tone="gray">Inactive</Pill>
+                          )}
+                          {empty && <Pill tone="red">Empty</Pill>}
                         </div>
                       </div>
 
@@ -1075,16 +1286,16 @@ export default function DepartmentsPage() {
                         max={maxCount}
                       />
 
-                      <div className="md:text-right">
-                        <p className="text-sm font-semibold text-[#0B3A8C]">
-                          {department.active_employee_count ?? 0}
-                          <span className="font-normal text-slate-400">
-                            {" "}
-                            / {department.employee_count ?? 0}
-                          </span>
-                        </p>
-                        <p className="text-xs text-slate-500">active</p>
-                      </div>
+                      <p className="text-sm font-semibold text-[#0B3A8C] md:text-right">
+                        {department.active_employee_count ?? 0}
+                        <span className="font-normal text-slate-400">
+                          {" "}
+                          / {department.employee_count ?? 0}
+                        </span>
+                        <span className="ml-1.5 text-xs font-normal text-slate-400 md:hidden">
+                          active
+                        </span>
+                      </p>
                     </button>
                   </li>
                 );
@@ -1100,8 +1311,10 @@ export default function DepartmentsPage() {
 
           {selected && (
             <DepartmentDetail
+              key={selected.id}
               department={selected}
               refreshKey={refreshKey}
+              panelRef={panelRef}
               onEdit={() => setFormModal({ department: selected })}
               onToggle={() => setStatusDepartment(selected)}
             />
