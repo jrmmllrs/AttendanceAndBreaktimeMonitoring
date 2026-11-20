@@ -36,6 +36,9 @@ import { useAuth } from "../../context/AuthContext";
  *    department sit in a red "No department" group on top.
  *  - Right: sticky profile panel for the selected employee with Edit,
  *    Reset kiosk PIN and Deactivate. This replaces the row action menu.
+ *
+ * Filters: employment type (pills), department, and search.
+ * All employment statuses are loaded; each row still shows its status badge.
  */
 
 const initialForm = {
@@ -61,20 +64,14 @@ const initialForm = {
   pin: "",
 };
 
-const STATUS_OPTIONS = [
-  { value: "active", label: "Active" },
-  { value: "inactive", label: "Inactive" },
-  { value: "resigned", label: "Resigned" },
-  { value: "terminated", label: "Terminated" },
-  { value: "all", label: "All" },
-];
-
 const EMPLOYMENT_TYPES = [
   { value: "regular", label: "Regular" },
-  { value: "probationary", label: "Probationary" },
-  { value: "contractual", label: "Contractual" },
+  // { value: "probationary", label: "Probationary" },
+  // { value: "contractual", label: "Contractual" },
   { value: "temporary", label: "Seasonal" },
 ];
+
+const TYPE_FILTERS = [{ value: "all", label: "All" }, ...EMPLOYMENT_TYPES];
 
 const NO_DEPARTMENT = "none";
 
@@ -825,7 +822,7 @@ export default function EmployeesPage() {
 
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("active");
+  const [employmentType, setEmploymentType] = useState("all");
   const [departmentId, setDepartmentId] = useState("all");
 
   const [selectedId, setSelectedId] = useState(null);
@@ -856,7 +853,7 @@ export default function EmployeesPage() {
               page: 1,
               limit: 100,
               search: query,
-              status,
+              status: "all",
               department_id: departmentId,
             },
           }),
@@ -878,7 +875,7 @@ export default function EmployeesPage() {
         setRefreshing(false);
       }
     },
-    [query, status, departmentId],
+    [query, departmentId],
   );
 
   useEffect(() => {
@@ -893,11 +890,29 @@ export default function EmployeesPage() {
 
   /* ----- Derived data ----- */
 
+  // Employment type is filtered on the client, on top of the search and
+  // department filters that are sent to the API.
+  const visibleEmployees =
+    employmentType === "all"
+      ? employees
+      : employees.filter((item) => item.employment_type === employmentType);
+
+  const typeCounts = employees.reduce(
+    (counts, item) => {
+      counts.all += 1;
+      if (item.employment_type) {
+        counts[item.employment_type] = (counts[item.employment_type] || 0) + 1;
+      }
+      return counts;
+    },
+    { all: 0 },
+  );
+
   // Group by department. "No department" goes first so gaps are obvious.
   const groups = (() => {
     const map = new Map();
 
-    employees.forEach((employee) => {
+    visibleEmployees.forEach((employee) => {
       const key = employee.department_id || NO_DEPARTMENT;
       if (!map.has(key)) {
         map.set(key, {
@@ -922,19 +937,23 @@ export default function EmployeesPage() {
     ordered[0] ||
     null;
 
-  const activeShown = employees.filter(
+  const activeShown = visibleEmployees.filter(
     (item) => item.employment_status === "active",
   ).length;
 
-  const noDepartmentCount = employees.filter((e) => !e.department_id).length;
+  const noDepartmentCount = visibleEmployees.filter(
+    (e) => !e.department_id,
+  ).length;
 
   const hasFilters =
-    Boolean(search.trim()) || departmentId !== "all" || status !== "active";
+    Boolean(search.trim()) ||
+    departmentId !== "all" ||
+    employmentType !== "all";
 
   const resetFilters = () => {
     setSearch("");
     setDepartmentId("all");
-    setStatus("active");
+    setEmploymentType("all");
   };
 
   /* ----- Actions ----- */
@@ -1024,7 +1043,7 @@ export default function EmployeesPage() {
   const kpis = [
     {
       label: "Employees shown",
-      value: employees.length,
+      value: visibleEmployees.length,
       detail: "Matching your filters",
     },
     {
@@ -1154,24 +1173,31 @@ export default function EmployeesPage() {
           <div
             className="flex gap-2 overflow-x-auto pb-0.5"
             role="group"
-            aria-label="Filter by employment status"
+            aria-label="Filter by employment type"
           >
-            {STATUS_OPTIONS.map((option) => {
-              const active = status === option.value;
+            {TYPE_FILTERS.map((option) => {
+              const active = employmentType === option.value;
 
               return (
                 <button
                   key={option.value}
                   type="button"
-                  onClick={() => setStatus(option.value)}
+                  onClick={() => setEmploymentType(option.value)}
                   aria-pressed={active}
-                  className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] ${
                     active
                       ? "border-[#1D63D6] bg-[#1D63D6] text-white"
                       : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
                   }`}
                 >
                   {option.label}
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                      active ? "bg-white/20 text-white" : "bg-[#EEF3FB]"
+                    }`}
+                  >
+                    {loading ? "—" : typeCounts[option.value] || 0}
+                  </span>
                 </button>
               );
             })}
@@ -1228,7 +1254,7 @@ export default function EmployeesPage() {
           <LoaderCircle size={20} className="animate-spin text-[#1D63D6]" />
           Loading employees...
         </div>
-      ) : employees.length === 0 ? (
+      ) : visibleEmployees.length === 0 ? (
         <div className={`${cardClass} px-6 py-20 text-center`}>
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#EAF1FD] text-[#1D63D6]">
             <Users size={27} />
@@ -1390,9 +1416,9 @@ export default function EmployeesPage() {
             })}
 
             <p className="text-xs text-slate-500">
-              Showing {employees.length} employee
-              {employees.length === 1 ? "" : "s"} on this page. Employee records
-              are retained when deactivated.
+              Showing {visibleEmployees.length} employee
+              {visibleEmployees.length === 1 ? "" : "s"}. Employee records are
+              retained when deactivated.
             </p>
           </div>
 

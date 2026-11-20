@@ -307,7 +307,7 @@ function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
             Supervisor
           </p>
 
-          {supervisor ? (
+          {/* {supervisor ? (
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#1D63D6] text-sm font-semibold text-white">
                 {initials(supervisor.full_name)}
@@ -334,7 +334,7 @@ function DepartmentDetail({ department, refreshKey, onEdit, onToggle }) {
                 Assign
               </button>
             </div>
-          )}
+          )} */}
         </div>
 
         <div>
@@ -903,7 +903,7 @@ export default function DepartmentsPage() {
               );
             })}
 
-            <button
+            {/* <button
               type="button"
               onClick={() => setOnlyNeedsSupervisor((v) => !v)}
               aria-pressed={onlyNeedsSupervisor}
@@ -915,7 +915,7 @@ export default function DepartmentsPage() {
             >
               <UserCog size={13} />
               Needs supervisor
-            </button>
+            </button> */}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1051,7 +1051,7 @@ export default function DepartmentsPage() {
                               <Pill tone="gray">Inactive</Pill>
                             )}
                           </div>
-
+{/* 
                           {department.supervisor ? (
                             <p className="mt-0.5 truncate text-xs text-slate-500">
                               {department.supervisor.full_name}
@@ -1065,7 +1065,7 @@ export default function DepartmentsPage() {
                             <p className="mt-0.5 text-xs text-slate-400">
                               Unassigned
                             </p>
-                          )}
+                          )} */}
                         </div>
                       </div>
 

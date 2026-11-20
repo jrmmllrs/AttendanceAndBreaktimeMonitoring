@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  Activity,
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Check,
   CheckCircle2,
-  Clock3,
   Coffee,
+  Filter,
   LoaderCircle,
   Play,
   RefreshCw,
@@ -22,6 +23,19 @@ const REFRESH_INTERVAL = 15000;
 const TIME_ZONE = "Asia/Manila";
 
 /**
+ * Spreadsheet-style breaktime sheet.
+ *
+ * Mouse
+ *   Click a row ........ select it        Shift+click ... select a range
+ *   Ctrl/Cmd+click ..... add / remove      Drag row # .... select a range
+ *   Click a column title (Name, Department, Status, Remaining) to sort.
+ *
+ * Keyboard (click the sheet first)
+ *   ↑ / ↓ ......... move       Shift+↑/↓ ... extend selection
+ *   S ............. start a break for the selection (uses the group schedule)
+ *   E ............. end the break of the selected employees
+ *   Ctrl+A ........ select all visible rows      Esc ... clear selection
+ *
  * Brand palette (same as Dashboard): white + blue + red, grays for neutrals.
  *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
  *   Red  #C8102E · Light red #FDECEF · Soft red #EE8696 · Border #E3EAF5
@@ -92,14 +106,6 @@ function getEmployeeName(employee) {
     .join(" ");
 }
 
-function getInitials(employee) {
-  return (
-    `${(employee?.first_name || "")[0] || ""}${
-      (employee?.last_name || "")[0] || ""
-    }`.toUpperCase() || "?"
-  );
-}
-
 function getErrorMessage(error, fallback) {
   if (typeof getApiError === "function") {
     return getApiError(error, fallback);
@@ -156,35 +162,44 @@ function getBreakInfo(activeBreak, now) {
   };
 }
 
-/* ---------- Building blocks ---------- */
-
-function StatCard({ label, value, description, icon: Icon, tone, loading }) {
-  const tones = {
-    blue: { chip: "bg-[#EAF1FD] text-[#1D63D6]", value: "text-[#0B3A8C]" },
-    soft: { chip: "bg-[#FDECEF] text-[#E0566B]", value: "text-[#E0566B]" },
-    red: { chip: "bg-[#FDECEF] text-[#C8102E]", value: "text-[#C8102E]" },
-    gray: { chip: "bg-slate-100 text-slate-500", value: "text-slate-600" },
-  };
-
-  const t = tones[tone] || tones.blue;
-
-  return (
-    <div className="rounded-2xl border border-[#E3EAF5] bg-white p-4 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-5">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium text-slate-600">{label}</p>
-        <div className={`shrink-0 rounded-lg p-2 ${t.chip}`}>
-          <Icon size={16} strokeWidth={2} />
-        </div>
-      </div>
-
-      <p className={`mt-3 text-3xl font-semibold tracking-tight ${t.value}`}>
-        {loading ? "—" : value}
-      </p>
-
-      <p className="mt-1 text-xs text-slate-500">{description}</p>
-    </div>
-  );
+/* Overbreak 0 · near limit 1 · on break 2 · available 3 */
+function getRank(activeBreak, info) {
+  if (!activeBreak) return 3;
+  if (info.isExceeded) return 0;
+  if (info.isNearLimit) return 1;
+  return 2;
 }
+
+/* ---------- Sheet layout ---------- */
+
+const COLUMNS = [
+  { key: "no", letter: "", label: "", width: 48 },
+  { key: "id", letter: "A", label: "Employee ID", width: 110 },
+  { key: "name", letter: "B", label: "Employee name", width: 230 },
+  { key: "dept", letter: "C", label: "Department", width: 160 },
+  { key: "status", letter: "D", label: "Status", width: 130 },
+  { key: "schedule", letter: "E", label: "Break / schedule", width: 250 },
+  { key: "started", letter: "F", label: "Started", width: 100 },
+  { key: "elapsed", letter: "G", label: "Elapsed", width: 100 },
+  { key: "allowed", letter: "H", label: "Allowed", width: 90 },
+  { key: "remaining", letter: "I", label: "Remaining", width: 180 },
+  { key: "action", letter: "J", label: "Action", width: 130 },
+];
+
+const SORTABLE = new Set(["name", "dept", "status", "remaining"]);
+const TOTAL_WIDTH = COLUMNS.reduce((sum, column) => sum + column.width, 0);
+const LEFT_OFFSETS = { no: 0, id: 48, name: 158 };
+
+const CELL = "h-10 border-b border-r border-[#E3EAF5] px-3 text-sm";
+
+const STATUS_TABS = [
+  { key: "all", label: "All" },
+  { key: "available", label: "Not on break" },
+  { key: "active", label: "On break" },
+  { key: "exceeded", label: "Overbreak" },
+];
+
+/* ---------- Building blocks ---------- */
 
 function Alert({ tone, icon: Icon, children, onDismiss }) {
   const styles =
@@ -215,394 +230,111 @@ function Alert({ tone, icon: Icon, children, onDismiss }) {
   );
 }
 
-function Avatar({ employee, active, danger }) {
-  let cls = "bg-[#EAF1FD] text-[#1D63D6]";
-
-  if (danger) cls = "bg-[#C8102E] text-white";
-  else if (active) cls = "bg-[#1D63D6] text-white";
-
+function Kbd({ children }) {
   return (
-    <div
-      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${cls}`}
-    >
-      {getInitials(employee)}
+    <kbd className="rounded border border-[#E3EAF5] bg-white px-1.5 py-0.5 font-sans text-[10px] font-semibold text-slate-500">
+      {children}
+    </kbd>
+  );
+}
+
+function SheetSkeleton() {
+  return (
+    <div className="animate-pulse">
+      {[1, 2, 3, 4, 5, 6, 7, 8].map((row) => (
+        <div key={row} className="flex border-b border-[#EEF3FB]">
+          <div className="h-10 w-12 bg-[#F1F5FB]" />
+          <div className="m-2 h-6 flex-1 rounded bg-[#EEF3FB]" />
+        </div>
+      ))}
     </div>
   );
 }
 
-function EmptyState({ icon: Icon, title, description }) {
+function EmptyState({ hasRows }) {
   return (
-    <div className="flex min-h-[190px] flex-col items-center justify-center px-5 text-center">
+    <div className="flex min-h-[240px] flex-col items-center justify-center px-5 text-center">
       <div className="mb-3 rounded-2xl bg-[#EAF1FD] p-4 text-[#1D63D6]">
-        <Icon size={25} strokeWidth={1.7} />
+        <Users size={25} strokeWidth={1.7} />
       </div>
-      <p className="text-sm font-medium text-slate-700">{title}</p>
+      <p className="text-sm font-medium text-slate-700">
+        {hasRows ? "No employees match your filters" : "No present employees"}
+      </p>
       <p className="mt-1 max-w-xs text-xs leading-5 text-slate-500">
-        {description}
+        {hasRows
+          ? "Try a different search, department or status."
+          : "Employees marked present today will appear here."}
       </p>
     </div>
   );
 }
 
-function StatusBadge({ activeBreak, now }) {
-  if (!activeBreak) {
-    return (
-      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
-        Not on break
-      </span>
-    );
-  }
+function StatusCell({ activeBreak, info }) {
+  let cls = "bg-white text-slate-400";
+  let text = "Available";
 
-  const info = getBreakInfo(activeBreak, now);
-
-  if (info.isExceeded) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-[#C8102E] px-2.5 py-1 text-xs font-semibold text-white">
-        <AlertTriangle size={11} />
-        Overbreak
-      </span>
-    );
-  }
-
-  if (info.isNearLimit) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-[#F5C2CA] bg-[#FDECEF] px-2.5 py-1 text-xs font-semibold text-[#C8102E]">
-        <Clock3 size={11} />
-        Near limit
-      </span>
-    );
+  if (activeBreak) {
+    if (info.isExceeded) {
+      cls = "bg-[#C8102E] font-semibold text-white";
+      text = "Overbreak";
+    } else if (info.isNearLimit) {
+      cls = "bg-[#FDECEF] font-semibold text-[#C8102E]";
+      text = "Near limit";
+    } else {
+      cls = "bg-[#EAF1FD] font-semibold text-[#1D63D6]";
+      text = "On break";
+    }
   }
 
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
-      <Coffee size={11} />
-      On break
-    </span>
+    <div className={`flex h-full w-full items-center justify-center ${cls}`}>
+      {text}
+    </div>
   );
 }
 
-function BreakTimer({ activeBreak, now, compact = false }) {
-  const info = getBreakInfo(activeBreak, now);
+/* Remaining time with an Excel-style "data bar" behind the text */
+function RemainingCell({ info }) {
+  if (!info) {
+    return (
+      <div className="flex h-full items-center px-3 text-slate-300">—</div>
+    );
+  }
 
-  if (!info) return null;
-
-  let colorClass = "text-[#1D63D6]";
-  let barColor = "#1D63D6";
-  let statusText = `${formatDuration(info.remainingSeconds)} remaining`;
+  let color = "#1D63D6";
+  let textClass = "text-[#1D63D6]";
+  let text = `${formatDuration(info.remainingSeconds)} left`;
 
   if (info.isExceeded) {
-    colorClass = "text-[#C8102E]";
-    barColor = "#C8102E";
-    statusText = `Overbreak by ${formatDuration(info.excessSeconds)}`;
+    color = "#C8102E";
+    textClass = "text-[#C8102E]";
+    text = `+${formatDuration(info.excessSeconds)} over`;
   } else if (info.isNearLimit) {
-    colorClass = "text-[#C8102E]";
-    barColor = "#EE8696";
-    statusText = `Near limit · ${formatDuration(info.remainingSeconds)} left`;
+    color = "#EE8696";
+    textClass = "text-[#C8102E]";
   }
 
   return (
-    <div className="min-w-0">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <p
-            className={`font-semibold tabular-nums ${colorClass} ${
-              compact ? "text-base" : "text-2xl"
-            }`}
-          >
-            {formatDuration(info.elapsedSeconds)}
-          </p>
-          {!compact && <p className="mt-0.5 text-xs text-slate-500">Elapsed</p>}
-        </div>
-
-        <div className="text-right">
-          <p className="text-sm font-semibold text-slate-700">
-            {activeBreak?.allowed_duration_minutes || 0} min
-          </p>
-          {!compact && <p className="mt-0.5 text-xs text-slate-500">Allowed</p>}
-        </div>
-      </div>
-
-      <div className="mt-2.5 h-2 overflow-hidden rounded-full bg-[#EEF3FB]">
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${info.progress}%`, backgroundColor: barColor }}
-        />
-      </div>
-
-      <p className={`mt-1.5 text-xs font-semibold ${colorClass}`}>
-        {statusText}
-      </p>
+    <div className="relative flex h-full items-center overflow-hidden">
+      <div
+        aria-hidden="true"
+        className="absolute inset-y-1.5 left-0 rounded-r transition-all duration-500"
+        style={{
+          width: `${info.progress}%`,
+          backgroundColor: color,
+          opacity: 0.2,
+        }}
+      />
+      <span
+        className={`relative px-3 text-sm font-semibold tabular-nums ${textClass}`}
+      >
+        {text}
+      </span>
     </div>
-  );
-}
-
-function ActiveBreakCard({
-  activeBreak,
-  employee,
-  now,
-  onEnd,
-  busy,
-  disabled,
-}) {
-  const info = getBreakInfo(activeBreak, now);
-
-  const name = employee
-    ? getEmployeeName(employee)
-    : `${activeBreak.first_name || ""} ${activeBreak.last_name || ""}`.trim();
-
-  const avatarSource = employee || {
-    first_name: activeBreak.first_name,
-    last_name: activeBreak.last_name,
-  };
-
-  let surface = "border-[#E3EAF5] bg-white";
-  if (info.isExceeded) surface = "border-[#F5C2CA] bg-[#FDECEF]/60";
-  else if (info.isNearLimit) surface = "border-[#F5C2CA] bg-white";
-
-  return (
-    <div className={`rounded-xl border p-4 ${surface}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <Avatar employee={avatarSource} danger={info.isExceeded} />
-
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-              {name || "Employee"}
-            </p>
-            <p className="mt-0.5 truncate text-xs text-slate-500">
-              {activeBreak.employee_number || employee?.employee_number || "—"}
-              {" · "}
-              {activeBreak.department_name ||
-                employee?.department_name ||
-                "No department"}
-            </p>
-          </div>
-        </div>
-
-        <StatusBadge activeBreak={activeBreak} now={now} />
-      </div>
-
-      <div className="mt-4 flex items-center justify-between gap-3 text-xs text-slate-500">
-        <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
-          <Coffee size={13} />
-          {activeBreak.break_name || "Break"}
-        </span>
-        <span>Started {formatTime(activeBreak.actual_start_at)}</span>
-      </div>
-
-      <div className="mt-3">
-        <BreakTimer activeBreak={activeBreak} now={now} />
-      </div>
-
-      {employee && (
-        <div className="mt-4 flex justify-end border-t border-[#EEF3FB] pt-3">
-          <button
-            type="button"
-            onClick={() => onEnd(employee)}
-            disabled={disabled}
-            className="inline-flex items-center gap-2 rounded-lg bg-[#0B3A8C] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:opacity-60"
-          >
-            {busy ? (
-              <LoaderCircle size={14} className="animate-spin" />
-            ) : (
-              <Square size={13} />
-            )}
-            End break
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SkeletonCards() {
-  return (
-    <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-2">
-      {[1, 2].map((item) => (
-        <div
-          key={item}
-          className="h-44 animate-pulse rounded-xl bg-[#F4F8FE]"
-        />
-      ))}
-    </div>
-  );
-}
-
-function SkeletonRows() {
-  return (
-    <div className="divide-y divide-[#EEF3FB]">
-      {[1, 2, 3, 4, 5].map((item) => (
-        <div key={item} className="flex animate-pulse items-center gap-4 p-5">
-          <div className="h-4 w-4 rounded bg-[#EEF3FB]" />
-          <div className="h-10 w-10 rounded-full bg-[#EEF3FB]" />
-          <div className="flex-1 space-y-2">
-            <div className="h-3 w-44 rounded bg-[#EEF3FB]" />
-            <div className="h-3 w-28 rounded bg-[#EEF3FB]" />
-          </div>
-          <div className="hidden h-10 w-64 rounded-xl bg-[#EEF3FB] lg:block" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* ---------- Roster row ---------- */
-
-function RosterRow({
-  employee,
-  activeBreak,
-  now,
-  selected,
-  onToggle,
-  scheduleId,
-  onScheduleChange,
-  onStart,
-  onEnd,
-  busy,
-  bulkLoading,
-}) {
-  const availableSchedules = getAvailableSchedules(employee);
-  const info = getBreakInfo(activeBreak, now);
-  const canStart = !activeBreak && availableSchedules.length > 0;
-  const name = getEmployeeName(employee);
-
-  let surface = selected ? "bg-[#F7FAFE]" : "bg-white hover:bg-[#F7FAFE]";
-  if (info?.isExceeded) {
-    surface = "bg-[#FDECEF]/40 shadow-[inset_3px_0_0_0_#C8102E]";
-  }
-
-  return (
-    <li
-      className={`flex flex-col gap-4 px-4 py-4 transition sm:px-5 xl:flex-row xl:items-center xl:justify-between ${surface}`}
-    >
-      <div className="flex min-w-0 items-start gap-3">
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={() => onToggle(employee.id)}
-          disabled={bulkLoading}
-          aria-label={`Select ${name}`}
-          className="mt-3 h-4 w-4 shrink-0 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
-        />
-
-        <Avatar
-          employee={employee}
-          active={selected}
-          danger={Boolean(info?.isExceeded)}
-        />
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-              {name || "Unnamed employee"}
-            </p>
-            <StatusBadge activeBreak={activeBreak} now={now} />
-          </div>
-
-          <p className="mt-0.5 text-xs text-slate-500">
-            {employee.employee_number || "No employee number"}
-            {" · "}
-            {employee.department_name || "No department"}
-            {employee.position_name ? ` · ${employee.position_name}` : ""}
-          </p>
-
-          {activeBreak && (
-            <div className="mt-3 max-w-sm">
-              <p className="mb-1.5 text-xs font-medium text-slate-600">
-                {activeBreak.break_name || "Break"} · Started{" "}
-                {formatTime(activeBreak.actual_start_at)}
-              </p>
-              <BreakTimer activeBreak={activeBreak} now={now} compact />
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto xl:min-w-[400px] xl:justify-end">
-        {activeBreak ? (
-          <button
-            type="button"
-            onClick={() => onEnd(employee)}
-            disabled={busy || bulkLoading}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0B3A8C] px-4 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:opacity-60"
-          >
-            {busy ? (
-              <LoaderCircle size={15} className="animate-spin" />
-            ) : (
-              <Square size={13} />
-            )}
-            End break
-          </button>
-        ) : (
-          <>
-            <select
-              value={scheduleId || ""}
-              onChange={(event) =>
-                onScheduleChange(employee.id, event.target.value)
-              }
-              disabled={!canStart || busy || bulkLoading}
-              aria-label={`Break schedule for ${name}`}
-              className="h-10 min-w-0 flex-1 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD] disabled:bg-slate-50 disabled:text-slate-400"
-            >
-              <option value="">
-                {availableSchedules.length
-                  ? "Select break schedule"
-                  : "No available schedule"}
-              </option>
-
-              {availableSchedules.map((schedule) => {
-                const count = getScheduleCount(
-                  employee.break_records,
-                  schedule.id,
-                );
-
-                const reached =
-                  schedule.max_occurrences_per_shift != null &&
-                  count >= Number(schedule.max_occurrences_per_shift);
-
-                return (
-                  <option
-                    key={schedule.id}
-                    value={schedule.id}
-                    disabled={reached}
-                  >
-                    {getScheduleLabel(schedule)} · {schedule.duration_minutes}{" "}
-                    min
-                    {schedule.break_type?.is_paid ? " · Paid" : " · Unpaid"}
-                    {reached ? " · Limit reached" : ""}
-                  </option>
-                );
-              })}
-            </select>
-
-            <button
-              type="button"
-              onClick={() => onStart(employee)}
-              disabled={busy || bulkLoading || !scheduleId}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-            >
-              {busy ? (
-                <LoaderCircle size={15} className="animate-spin" />
-              ) : (
-                <Play size={14} />
-              )}
-              Start break
-            </button>
-          </>
-        )}
-      </div>
-    </li>
   );
 }
 
 /* ---------- Page ---------- */
-
-const STATUS_TABS = [
-  { key: "all", label: "All" },
-  { key: "available", label: "Not on break" },
-  { key: "active", label: "On break" },
-  { key: "exceeded", label: "Overbreak" },
-];
 
 export default function BreaktimeMonitoringPage() {
   const [employees, setEmployees] = useState([]);
@@ -611,8 +343,12 @@ export default function BreaktimeMonitoringPage() {
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
 
-  const [selectedEmployees, setSelectedEmployees] = useState([]);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [anchorId, setAnchorId] = useState(null);
+
   const [selectedSchedules, setSelectedSchedules] = useState({});
   const [bulkScheduleId, setBulkScheduleId] = useState("");
 
@@ -627,7 +363,8 @@ export default function BreaktimeMonitoringPage() {
 
   const [now, setNow] = useState(Date.now());
 
-  const selectAllRef = useRef(null);
+  const gridRef = useRef(null);
+  const dragging = useRef(false);
   const workDate = getManilaDate();
 
   const loadData = useCallback(
@@ -689,6 +426,16 @@ export default function BreaktimeMonitoringPage() {
     };
   }, [loadData]);
 
+  /* Stop drag-selecting when the mouse is released anywhere */
+  useEffect(() => {
+    const stop = () => {
+      dragging.current = false;
+    };
+
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, []);
+
   /* ----- Derived data ----- */
 
   const presentEmployees = useMemo(
@@ -707,16 +454,39 @@ export default function BreaktimeMonitoringPage() {
     return map;
   }, [activeBreaks]);
 
-  const employeeById = useMemo(() => {
-    const map = new Map();
-    presentEmployees.forEach((employee) => map.set(employee.id, employee));
-    return map;
-  }, [presentEmployees]);
+  /*
+   * Present employees, plus anyone with an active break who is not marked
+   * present, so an overbreak is never hidden from the sheet.
+   */
+  const rosterEmployees = useMemo(() => {
+    const known = new Set(presentEmployees.map((employee) => employee.id));
+    const extra = [];
+
+    activeBreaks.forEach((item) => {
+      if (known.has(item.employee_id)) return;
+
+      known.add(item.employee_id);
+      extra.push({
+        id: item.employee_id,
+        first_name: item.first_name,
+        middle_name: null,
+        last_name: item.last_name,
+        employee_number: item.employee_number,
+        department_id: item.department_id,
+        department_name: item.department_name,
+        break_schedules: [],
+        break_records: [],
+        _notPresent: true,
+      });
+    });
+
+    return [...presentEmployees, ...extra];
+  }, [presentEmployees, activeBreaks]);
 
   const departments = useMemo(() => {
     const unique = new Map();
 
-    presentEmployees.forEach((employee) => {
+    rosterEmployees.forEach((employee) => {
       if (employee.department_id) {
         unique.set(
           employee.department_id,
@@ -728,7 +498,7 @@ export default function BreaktimeMonitoringPage() {
     return Array.from(unique.entries())
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [presentEmployees]);
+  }, [rosterEmployees]);
 
   const groupSchedules = useMemo(
     () =>
@@ -742,21 +512,10 @@ export default function BreaktimeMonitoringPage() {
     [presentEmployees],
   );
 
-  /* Overbreak first, then least time remaining */
-  const sortedActiveBreaks = useMemo(
-    () =>
-      [...activeBreaks].sort(
-        (a, b) =>
-          (getBreakInfo(a, now)?.remainingSeconds ?? 0) -
-          (getBreakInfo(b, now)?.remainingSeconds ?? 0),
-      ),
-    [activeBreaks, now],
-  );
-
   const filteredEmployees = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
 
-    return presentEmployees.filter((employee) => {
+    return rosterEmployees.filter((employee) => {
       const activeBreak = activeBreakByEmployee.get(employee.id);
       const info = getBreakInfo(activeBreak, now);
 
@@ -787,7 +546,7 @@ export default function BreaktimeMonitoringPage() {
       return matchesSearch && matchesDepartment && matchesStatus;
     });
   }, [
-    presentEmployees,
+    rosterEmployees,
     activeBreakByEmployee,
     search,
     departmentFilter,
@@ -795,7 +554,54 @@ export default function BreaktimeMonitoringPage() {
     now,
   ]);
 
-  const onBreakCount = presentEmployees.filter((employee) =>
+  const sortedEmployees = useMemo(() => {
+    if (!sort.key) return filteredEmployees;
+
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const copy = [...filteredEmployees];
+
+    copy.sort((a, b) => {
+      if (sort.key === "name") {
+        return (
+          getEmployeeName(a)
+            .toLowerCase()
+            .localeCompare(getEmployeeName(b).toLowerCase()) * dir
+        );
+      }
+
+      if (sort.key === "dept") {
+        return (
+          String(a.department_name || "")
+            .toLowerCase()
+            .localeCompare(String(b.department_name || "").toLowerCase()) * dir
+        );
+      }
+
+      const aBreak = activeBreakByEmployee.get(a.id);
+      const bBreak = activeBreakByEmployee.get(b.id);
+      const aInfo = getBreakInfo(aBreak, now);
+      const bInfo = getBreakInfo(bBreak, now);
+
+      if (sort.key === "status") {
+        return (getRank(aBreak, aInfo) - getRank(bBreak, bInfo)) * dir;
+      }
+
+      // remaining: employees who are not on break always go last
+      if (!aInfo && !bInfo) return 0;
+      if (!aInfo) return 1;
+      if (!bInfo) return -1;
+      return (aInfo.remainingSeconds - bInfo.remainingSeconds) * dir;
+    });
+
+    return copy;
+  }, [filteredEmployees, sort, activeBreakByEmployee, now]);
+
+  const visibleIds = useMemo(
+    () => sortedEmployees.map((employee) => employee.id),
+    [sortedEmployees],
+  );
+
+  const onBreakCount = rosterEmployees.filter((employee) =>
     activeBreakByEmployee.has(employee.id),
   ).length;
 
@@ -807,23 +613,21 @@ export default function BreaktimeMonitoringPage() {
     (item) => getBreakInfo(item, now)?.isNearLimit,
   ).length;
 
-  const availableCount = presentEmployees.length - onBreakCount;
+  const availableCount = rosterEmployees.length - onBreakCount;
 
   const tabCounts = {
-    all: presentEmployees.length,
+    all: rosterEmployees.length,
     available: availableCount,
     active: Math.max(0, onBreakCount - exceededCount),
     exceeded: exceededCount,
   };
 
-  const selectedSet = useMemo(
-    () => new Set(selectedEmployees),
-    [selectedEmployees],
-  );
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedCount = selectedIds.length;
 
   const selectedEmployeeObjects = useMemo(
-    () => presentEmployees.filter((employee) => selectedSet.has(employee.id)),
-    [presentEmployees, selectedSet],
+    () => rosterEmployees.filter((employee) => selectedSet.has(employee.id)),
+    [rosterEmployees, selectedSet],
   );
 
   const selectedNotOnBreak = selectedEmployeeObjects.filter(
@@ -851,44 +655,114 @@ export default function BreaktimeMonitoringPage() {
     );
   });
 
-  const selectedVisibleIds = useMemo(
-    () => filteredEmployees.map((employee) => employee.id),
-    [filteredEmployees],
-  );
+  const activeIndex = activeId ? visibleIds.indexOf(activeId) : -1;
+  const activeEmployee = activeIndex >= 0 ? sortedEmployees[activeIndex] : null;
 
-  const allVisibleSelected =
-    selectedVisibleIds.length > 0 &&
-    selectedVisibleIds.every((id) => selectedSet.has(id));
-
-  const someVisibleSelected = selectedVisibleIds.some((id) =>
-    selectedSet.has(id),
-  );
-
+  /* Keep the active row visible while moving with the keyboard */
   useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate =
-        someVisibleSelected && !allVisibleSelected;
-    }
-  }, [someVisibleSelected, allVisibleSelected]);
+    if (!activeId) return;
 
-  /* ----- Actions ----- */
+    gridRef.current
+      ?.querySelector(`[data-row="${activeId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeId]);
 
-  const toggleEmployee = (employeeId) => {
-    setSelectedEmployees((current) =>
-      current.includes(employeeId)
-        ? current.filter((id) => id !== employeeId)
-        : [...current, employeeId],
-    );
+  /* ----- Sorting ----- */
+
+  const toggleSort = (key) => {
+    if (!SORTABLE.has(key)) return;
+
+    setSort((current) => {
+      if (current.key !== key) return { key, dir: "asc" };
+      if (current.dir === "asc") return { key, dir: "desc" };
+      return { key: null, dir: "asc" };
+    });
   };
 
-  const toggleSelectAll = () => {
-    setSelectedEmployees((current) => {
-      if (allVisibleSelected) {
-        return current.filter((id) => !selectedVisibleIds.includes(id));
-      }
+  /* ----- Selection ----- */
 
-      return Array.from(new Set([...current, ...selectedVisibleIds]));
-    });
+  const focusGrid = () => gridRef.current?.focus({ preventScroll: true });
+
+  const extendTo = (id) => {
+    const from = visibleIds.indexOf(anchorId ?? activeId ?? id);
+    const to = visibleIds.indexOf(id);
+
+    if (to < 0) return;
+
+    const start = Math.min(from < 0 ? to : from, to);
+    const end = Math.max(from < 0 ? to : from, to);
+
+    if (!anchorId) setAnchorId(activeId ?? id);
+
+    setSelectedIds(visibleIds.slice(start, end + 1));
+    setActiveId(id);
+  };
+
+  const selectRow = (event, id) => {
+    focusGrid();
+
+    if (event.shiftKey) {
+      extendTo(id);
+      return;
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedIds((current) =>
+        current.includes(id)
+          ? current.filter((item) => item !== id)
+          : [...current, id],
+      );
+      setActiveId(id);
+      setAnchorId(id);
+      return;
+    }
+
+    setSelectedIds([id]);
+    setActiveId(id);
+    setAnchorId(id);
+  };
+
+  const handleGutterMouseDown = (event, id) => {
+    event.preventDefault();
+    dragging.current = true;
+    selectRow(event, id);
+  };
+
+  const handleGutterEnter = (id) => {
+    if (dragging.current) extendTo(id);
+  };
+
+  const moveActive = (delta, extend) => {
+    if (visibleIds.length === 0) return;
+
+    const current = activeId ? visibleIds.indexOf(activeId) : -1;
+    const next = Math.min(
+      visibleIds.length - 1,
+      Math.max(0, current < 0 ? 0 : current + delta),
+    );
+    const id = visibleIds[next];
+
+    if (extend) {
+      extendTo(id);
+    } else {
+      setActiveId(id);
+      setAnchorId(id);
+      setSelectedIds([id]);
+    }
+  };
+
+  const selectAllVisible = () => {
+    setSelectedIds(visibleIds);
+
+    if (!activeId && visibleIds.length) {
+      setActiveId(visibleIds[0]);
+      setAnchorId(visibleIds[0]);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    setAnchorId(null);
   };
 
   const setEmployeeSchedule = (employeeId, scheduleId) => {
@@ -896,7 +770,12 @@ export default function BreaktimeMonitoringPage() {
       ...current,
       [employeeId]: scheduleId,
     }));
+
+    // Hand focus back to the sheet so the arrow keys don't change the dropdown
+    requestAnimationFrame(focusGrid);
   };
+
+  /* ----- Break actions ----- */
 
   const handleStartBreak = async (employee) => {
     const scheduleId = selectedSchedules[employee.id];
@@ -960,6 +839,14 @@ export default function BreaktimeMonitoringPage() {
   };
 
   const handleBulkAction = async (action) => {
+    if (bulkLoading) return;
+
+    if (action === "break_start" && !bulkScheduleId) {
+      setError("Choose a group break schedule in the formula bar first.");
+      setSuccess("");
+      return;
+    }
+
     const targets =
       action === "break_start" ? eligibleStartEmployees : selectedOnBreak;
 
@@ -969,11 +856,6 @@ export default function BreaktimeMonitoringPage() {
           ? "No selected employees are eligible to start this break."
           : "Select at least one employee who is currently on break.",
       );
-      return;
-    }
-
-    if (action === "break_start" && !bulkScheduleId) {
-      setError("Please select a break schedule for the group.");
       return;
     }
 
@@ -1018,7 +900,7 @@ export default function BreaktimeMonitoringPage() {
           `Bulk action processed for ${employeeIds.length} employees.`,
       );
 
-      setSelectedEmployees([]);
+      clearSelection();
       await loadData({ silent: true });
     } catch (requestError) {
       setError(
@@ -1029,11 +911,84 @@ export default function BreaktimeMonitoringPage() {
     }
   };
 
+  /* ----- Keyboard ----- */
+
+  const handleKeyDown = (event) => {
+    // Let dropdowns, inputs and buttons keep their own keyboard behavior
+    if (event.target.closest?.("select,input,textarea,button,option")) return;
+
+    const key = event.key.toLowerCase();
+    const mod = event.ctrlKey || event.metaKey;
+
+    if (mod && key === "a") {
+      event.preventDefault();
+      selectAllVisible();
+      return;
+    }
+
+    if (mod || event.altKey) return;
+
+    if (key === "arrowdown" || key === "arrowup") {
+      event.preventDefault();
+      moveActive(key === "arrowdown" ? 1 : -1, event.shiftKey);
+      return;
+    }
+
+    if (key === "s") {
+      event.preventDefault();
+      handleBulkAction("break_start");
+      return;
+    }
+
+    if (key === "e") {
+      event.preventDefault();
+      handleBulkAction("break_end");
+      return;
+    }
+
+    if (key === "escape") {
+      clearSelection();
+    }
+  };
+
+  /* ----- Formula bar text ----- */
+
+  const activeBreakForActive = activeEmployee
+    ? activeBreakByEmployee.get(activeEmployee.id)
+    : null;
+  const activeInfo = getBreakInfo(activeBreakForActive, now);
+
+  let formulaText = "Click a row, then press S to start or E to end a break.";
+
+  if (activeEmployee) {
+    const who = `${getEmployeeName(activeEmployee) || "Unnamed employee"} · ${
+      activeEmployee.employee_number || "No ID"
+    }`;
+
+    if (activeInfo) {
+      formulaText = `${who} — ${activeBreakForActive.break_name || "Break"} · ${formatDuration(
+        activeInfo.elapsedSeconds,
+      )} elapsed${
+        activeInfo.isExceeded
+          ? ` · overbreak ${formatDuration(activeInfo.excessSeconds)}`
+          : ""
+      }`;
+    } else {
+      formulaText = `${who} — not on break`;
+    }
+  }
+
+  const nameBox =
+    selectedCount > 1
+      ? `${selectedCount} rows`
+      : activeIndex >= 0
+        ? `D${activeIndex + 2}`
+        : "—";
+
   const initialLoad = loading;
-  const selectedCount = selectedEmployees.length;
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-5 pb-6">
       {/* ===== Header ===== */}
       <header className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
         <div className="flex h-1.5">
@@ -1119,62 +1074,9 @@ export default function BreaktimeMonitoringPage() {
         </div>
       )}
 
-      {/* ===== Summary ===== */}
-      <section
-        aria-label="Break summary"
-        className="grid grid-cols-2 gap-4 xl:grid-cols-5"
-      >
-        <div className="col-span-2 xl:col-span-1">
-          <StatCard
-            label="Present"
-            value={presentEmployees.length}
-            description="Marked present today"
-            icon={Users}
-            tone="blue"
-            loading={initialLoad}
-          />
-        </div>
-
-        <StatCard
-          label="On break"
-          value={onBreakCount}
-          description="Active break records"
-          icon={Coffee}
-          tone="blue"
-          loading={initialLoad}
-        />
-
-        <StatCard
-          label="Available"
-          value={availableCount}
-          description="Not currently on break"
-          icon={Activity}
-          tone="gray"
-          loading={initialLoad}
-        />
-
-        <StatCard
-          label="Near limit"
-          value={nearLimitCount}
-          description="5 minutes or less left"
-          icon={Clock3}
-          tone="soft"
-          loading={initialLoad}
-        />
-
-        <StatCard
-          label="Overbreak"
-          value={exceededCount}
-          description="Beyond allowed time"
-          icon={AlertTriangle}
-          tone="red"
-          loading={initialLoad}
-        />
-      </section>
-
       {/* ===== Bulk results ===== */}
       {bulkResults && (
-        <section className="rounded-2xl border border-[#E3EAF5] bg-white p-5 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-6">
+        <section className="rounded-2xl border border-[#E3EAF5] bg-white p-5 shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-[#0B3A8C]">
               Bulk action results
@@ -1213,7 +1115,7 @@ export default function BreaktimeMonitoringPage() {
           </div>
 
           {bulkResults.results.length > 0 && (
-            <ul className="mt-4 divide-y divide-[#EEF3FB]">
+            <ul className="mt-4 max-h-56 divide-y divide-[#EEF3FB] overflow-y-auto">
               {[...bulkResults.results]
                 .sort((a, b) => Number(a.success) - Number(b.success))
                 .map((item, index) => (
@@ -1245,105 +1147,49 @@ export default function BreaktimeMonitoringPage() {
         </section>
       )}
 
-      {/* ===== Active breaks ===== */}
-      <section className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
-        <div className="flex flex-col gap-2 border-b border-[#EEF3FB] px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div>
-            <h2 className="text-base font-semibold text-[#0B3A8C]">
-              Active breaks
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Overbreak shown first, then least time remaining
-            </p>
+      {/* ===== Sheet ===== */}
+      <section
+        aria-label="Breaktime sheet"
+        className="flex flex-col overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]"
+        style={{ height: "calc(100vh - 15rem)", minHeight: 540 }}
+      >
+        {/* Toolbar */}
+        <div className="flex flex-col gap-3 border-b border-[#E3EAF5] p-3 lg:flex-row lg:items-center">
+          <div className="relative lg:w-72">
+            <Search
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search name or employee number..."
+              aria-label="Search employees"
+              className="h-9 w-full rounded-lg border border-[#E3EAF5] pl-9 pr-8 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
 
-          <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[#EAF1FD] px-3 py-1.5 text-xs font-semibold text-[#1D63D6]">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-[#1D63D6]" />
-            {activeBreaks.length} active
-          </span>
-        </div>
-
-        {initialLoad ? (
-          <SkeletonCards />
-        ) : activeBreaks.length === 0 ? (
-          <EmptyState
-            icon={Coffee}
-            title="No active breaks"
-            description="Employees currently on break will appear here."
-          />
-        ) : (
-          <div className="grid grid-cols-1 gap-4 p-4 sm:p-5 lg:grid-cols-2">
-            {sortedActiveBreaks.map((activeBreak) => {
-              const employee = employeeById.get(activeBreak.employee_id);
-
-              return (
-                <ActiveBreakCard
-                  key={activeBreak.id}
-                  activeBreak={activeBreak}
-                  employee={employee}
-                  now={now}
-                  onEnd={handleEndBreak}
-                  busy={actionEmployeeId === activeBreak.employee_id}
-                  disabled={
-                    actionEmployeeId === activeBreak.employee_id || bulkLoading
-                  }
-                />
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* ===== Roster ===== */}
-      <section className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
-        <div className="space-y-4 border-b border-[#EEF3FB] p-4 sm:p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold text-[#0B3A8C]">
-                Present employees
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Start or end a break per person, or select several for a group
-                action.
-              </p>
-            </div>
-
-            <span className="shrink-0 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
-              {filteredEmployees.length} shown
-            </span>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-[1fr_240px]">
-            <div className="relative">
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search employee name or number..."
-                aria-label="Search employees"
-                className="h-10 w-full rounded-xl border border-[#E3EAF5] pl-10 pr-9 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch("")}
-                  aria-label="Clear search"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-
+          <div className="relative lg:w-52">
+            <Filter
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
             <select
               value={departmentFilter}
               onChange={(event) => setDepartmentFilter(event.target.value)}
               aria-label="Filter by department"
-              className="h-10 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+              className="h-9 w-full appearance-none rounded-lg border border-[#E3EAF5] bg-white pl-8 pr-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
             >
               <option value="all">All departments</option>
               {departments.map((department) => (
@@ -1357,7 +1203,7 @@ export default function BreaktimeMonitoringPage() {
           <div
             role="tablist"
             aria-label="Filter by break status"
-            className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
+            className="flex gap-1.5 overflow-x-auto lg:flex-1"
           >
             {STATUS_TABS.map((tab) => {
               const active = statusFilter === tab.key;
@@ -1381,7 +1227,7 @@ export default function BreaktimeMonitoringPage() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => setStatusFilter(tab.key)}
-                  className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition ${cls}`}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${cls}`}
                 >
                   {tab.label}
                   <span
@@ -1397,168 +1243,434 @@ export default function BreaktimeMonitoringPage() {
           </div>
         </div>
 
-        {/* Select-all row */}
-        <div
-          className={`flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-5 ${
-            selectedCount > 0
-              ? "border-[#CFE0FA] bg-[#EAF1FD]"
-              : "border-[#EEF3FB] bg-[#F7FAFE]"
-          }`}
-        >
-          <label className="flex cursor-pointer items-center gap-3">
-            <input
-              ref={selectAllRef}
-              type="checkbox"
-              checked={allVisibleSelected}
-              onChange={toggleSelectAll}
-              disabled={filteredEmployees.length === 0 || bulkLoading}
-              className="h-4 w-4 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
-            />
-            <span className="text-sm font-semibold text-[#0B3A8C]">
-              {selectedCount > 0
-                ? `${selectedCount} selected`
-                : "Select all visible"}
-            </span>
-          </label>
+        {/* Formula bar */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-[#E3EAF5] bg-[#F7FAFE] px-3 py-2">
+          <div className="w-20 shrink-0 rounded-md border border-[#E3EAF5] bg-white px-2 py-1 text-center text-xs font-semibold text-[#0B3A8C]">
+            {nameBox}
+          </div>
 
-          {selectedCount > 0 && (
+          <span className="font-serif text-sm italic text-slate-400">fx</span>
+
+          <p className="min-w-[160px] flex-1 truncate text-sm text-slate-700">
+            {formulaText}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <select
+              value={bulkScheduleId}
+              onChange={(event) => {
+                setBulkScheduleId(event.target.value);
+                requestAnimationFrame(focusGrid);
+              }}
+              disabled={bulkLoading}
+              aria-label="Group break schedule"
+              className="h-8 max-w-[220px] rounded-lg border border-[#E3EAF5] bg-white px-2 text-xs text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+            >
+              <option value="">Group schedule…</option>
+              {groupSchedules.map((schedule) => (
+                <option key={schedule.id} value={schedule.id}>
+                  {getScheduleLabel(schedule)} · {schedule.duration_minutes} min
+                </option>
+              ))}
+            </select>
+
             <button
               type="button"
-              onClick={() => setSelectedEmployees([])}
-              className="text-xs font-semibold text-[#1D63D6] hover:underline"
+              onClick={() => handleBulkAction("break_start")}
+              disabled={
+                bulkLoading ||
+                !bulkScheduleId ||
+                eligibleStartEmployees.length === 0
+              }
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1D63D6] px-3 text-xs font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
             >
-              Clear selection
+              {bulkLoading ? (
+                <LoaderCircle size={13} className="animate-spin" />
+              ) : (
+                <Play size={12} />
+              )}
+              Start ({eligibleStartEmployees.length})
+              <span className="hidden lg:inline">
+                <Kbd>S</Kbd>
+              </span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => handleBulkAction("break_end")}
+              disabled={bulkLoading || selectedOnBreak.length === 0}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#0B3A8C] px-3 text-xs font-semibold text-white transition hover:bg-[#1D63D6] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              <Square size={11} />
+              End ({selectedOnBreak.length})
+              <span className="hidden lg:inline">
+                <Kbd>E</Kbd>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={clearSelection}
+              disabled={selectedCount === 0 || bulkLoading}
+              aria-label="Clear selection"
+              title="Clear selection (Esc)"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-[#E3EAF5] bg-white px-2.5 text-slate-500 transition hover:border-[#C8102E] hover:text-[#C8102E] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Grid */}
+        <div
+          ref={gridRef}
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          aria-label="Breaktime grid. Use arrow keys to move, S to start a break, E to end a break."
+          className="relative min-h-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6]/40"
+        >
+          {initialLoad ? (
+            <SheetSkeleton />
+          ) : sortedEmployees.length === 0 ? (
+            <EmptyState hasRows={rosterEmployees.length > 0} />
+          ) : (
+            <table
+              className="table-fixed border-separate border-spacing-0"
+              style={{ width: TOTAL_WIDTH, minWidth: "100%" }}
+            >
+              <colgroup>
+                {COLUMNS.map((column) => (
+                  <col key={column.key} style={{ width: column.width }} />
+                ))}
+              </colgroup>
+
+              <thead>
+                {/* Column letters */}
+                <tr>
+                  {COLUMNS.map((column) => (
+                    <th
+                      key={column.key}
+                      style={
+                        LEFT_OFFSETS[column.key] !== undefined
+                          ? { left: LEFT_OFFSETS[column.key] }
+                          : undefined
+                      }
+                      className={`sticky top-0 h-6 select-none border-b border-r border-[#E3EAF5] bg-[#F1F5FB] text-center text-[11px] font-medium text-slate-400 ${
+                        LEFT_OFFSETS[column.key] !== undefined ? "z-30" : "z-20"
+                      }`}
+                    >
+                      {column.letter}
+                    </th>
+                  ))}
+                </tr>
+
+                {/* Column names (click to sort) */}
+                <tr>
+                  {COLUMNS.map((column) => {
+                    const sortable = SORTABLE.has(column.key);
+                    const sorted = sort.key === column.key;
+
+                    return (
+                      <th
+                        key={column.key}
+                        onClick={() => toggleSort(column.key)}
+                        aria-sort={
+                          sorted
+                            ? sort.dir === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : undefined
+                        }
+                        style={{
+                          top: 24,
+                          ...(LEFT_OFFSETS[column.key] !== undefined
+                            ? { left: LEFT_OFFSETS[column.key] }
+                            : {}),
+                        }}
+                        className={`sticky h-9 select-none border-b-2 border-r border-b-[#CFE0FA] border-r-[#E3EAF5] bg-[#F7FAFE] px-3 text-left text-xs font-semibold text-slate-600 ${
+                          LEFT_OFFSETS[column.key] !== undefined
+                            ? "z-30"
+                            : "z-20"
+                        } ${
+                          sortable ? "cursor-pointer hover:bg-[#EAF1FD]" : ""
+                        } ${column.key === "status" ? "text-center" : ""}`}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          {column.label}
+                          {sorted &&
+                            (sort.dir === "asc" ? (
+                              <ArrowUp size={12} className="text-[#1D63D6]" />
+                            ) : (
+                              <ArrowDown size={12} className="text-[#1D63D6]" />
+                            ))}
+                        </span>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+
+              <tbody>
+                {sortedEmployees.map((employee, index) => {
+                  const activeBreak = activeBreakByEmployee.get(employee.id);
+                  const info = getBreakInfo(activeBreak, now);
+                  const selected = selectedSet.has(employee.id);
+                  const active = activeId === employee.id;
+                  const busy = actionEmployeeId === employee.id;
+                  const name = getEmployeeName(employee);
+                  const availableSchedules = getAvailableSchedules(employee);
+                  const scheduleId = selectedSchedules[employee.id] || "";
+
+                  let rowBg = "bg-white group-hover:bg-[#F7FAFE]";
+                  if (selected) rowBg = "bg-[#EAF1FD]";
+                  else if (info?.isExceeded) rowBg = "bg-[#FDECEF]";
+
+                  let gutter = "bg-[#F1F5FB] text-slate-500";
+                  if (active) gutter = "bg-[#1D63D6] text-white";
+                  else if (selected) gutter = "bg-[#CFE0FA] text-[#0B3A8C]";
+                  else if (info?.isExceeded) gutter = "bg-[#C8102E] text-white";
+
+                  return (
+                    <tr
+                      key={employee.id}
+                      data-row={employee.id}
+                      onMouseDown={(event) => {
+                        if (event.button !== 0) return;
+                        // Dropdowns and buttons in the row keep their own click
+                        if (event.target.closest("select,button,option")) {
+                          return;
+                        }
+                        selectRow(event, employee.id);
+                      }}
+                      className="group scroll-mt-16"
+                    >
+                      <td
+                        style={{ left: LEFT_OFFSETS.no }}
+                        onMouseDown={(event) => {
+                          event.stopPropagation();
+                          if (event.button !== 0) return;
+                          handleGutterMouseDown(event, employee.id);
+                        }}
+                        onMouseEnter={() => handleGutterEnter(employee.id)}
+                        className={`${CELL} sticky z-10 cursor-pointer select-none text-center text-xs font-medium ${gutter}`}
+                      >
+                        {index + 1}
+                      </td>
+
+                      <td
+                        style={{ left: LEFT_OFFSETS.id }}
+                        className={`${CELL} sticky z-10 select-none truncate text-slate-600 ${rowBg}`}
+                      >
+                        {employee.employee_number || "—"}
+                      </td>
+
+                      <td
+                        style={{ left: LEFT_OFFSETS.name }}
+                        className={`${CELL} sticky z-10 select-none truncate font-semibold text-[#0B3A8C] ${rowBg}`}
+                      >
+                        {name || "Unnamed employee"}
+                        {employee._notPresent && (
+                          <span
+                            title="Not marked present today"
+                            className="ml-2 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500"
+                          >
+                            not present
+                          </span>
+                        )}
+                      </td>
+
+                      <td
+                        className={`${CELL} select-none truncate text-slate-600 ${rowBg}`}
+                      >
+                        {employee.department_name || "—"}
+                      </td>
+
+                      <td className={`${CELL} select-none p-0`}>
+                        <StatusCell activeBreak={activeBreak} info={info} />
+                      </td>
+
+                      <td className={`${CELL} p-0 ${rowBg}`}>
+                        {activeBreak ? (
+                          <span className="flex h-full items-center truncate px-3 font-medium text-slate-700">
+                            {activeBreak.break_name || "Break"}
+                          </span>
+                        ) : (
+                          <select
+                            value={scheduleId}
+                            onChange={(event) =>
+                              setEmployeeSchedule(
+                                employee.id,
+                                event.target.value,
+                              )
+                            }
+                            disabled={
+                              availableSchedules.length === 0 ||
+                              busy ||
+                              bulkLoading
+                            }
+                            aria-label={`Break schedule for ${name}`}
+                            className="h-full w-full cursor-pointer border-0 bg-transparent px-3 text-sm text-slate-700 outline-none focus:bg-white focus:ring-2 focus:ring-inset focus:ring-[#1D63D6] disabled:cursor-not-allowed disabled:text-slate-400"
+                          >
+                            <option value="">
+                              {availableSchedules.length
+                                ? "Select schedule…"
+                                : "No schedule available"}
+                            </option>
+
+                            {availableSchedules.map((schedule) => {
+                              const count = getScheduleCount(
+                                employee.break_records,
+                                schedule.id,
+                              );
+
+                              const reached =
+                                schedule.max_occurrences_per_shift != null &&
+                                count >=
+                                  Number(schedule.max_occurrences_per_shift);
+
+                              return (
+                                <option
+                                  key={schedule.id}
+                                  value={schedule.id}
+                                  disabled={reached}
+                                >
+                                  {getScheduleLabel(schedule)} ·{" "}
+                                  {schedule.duration_minutes} min
+                                  {schedule.break_type?.is_paid
+                                    ? " · Paid"
+                                    : " · Unpaid"}
+                                  {reached ? " · Limit reached" : ""}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        )}
+                      </td>
+
+                      <td
+                        className={`${CELL} select-none tabular-nums text-slate-600 ${rowBg}`}
+                      >
+                        {activeBreak
+                          ? formatTime(activeBreak.actual_start_at)
+                          : "—"}
+                      </td>
+
+                      <td
+                        className={`${CELL} select-none font-semibold tabular-nums ${rowBg} ${
+                          info?.isExceeded ? "text-[#C8102E]" : "text-slate-700"
+                        }`}
+                      >
+                        {info ? formatDuration(info.elapsedSeconds) : "—"}
+                      </td>
+
+                      <td
+                        className={`${CELL} select-none tabular-nums text-slate-600 ${rowBg}`}
+                      >
+                        {activeBreak
+                          ? `${activeBreak.allowed_duration_minutes || 0} min`
+                          : "—"}
+                      </td>
+
+                      <td className={`${CELL} select-none p-0 ${rowBg}`}>
+                        <RemainingCell info={info} />
+                      </td>
+
+                      <td className={`${CELL} p-0 ${rowBg}`}>
+                        <div className="flex h-full items-center justify-center px-2">
+                          {activeBreak ? (
+                            <button
+                              type="button"
+                              onClick={() => handleEndBreak(employee)}
+                              disabled={busy || bulkLoading}
+                              className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-[#0B3A8C] text-xs font-semibold text-white transition hover:bg-[#1D63D6] disabled:opacity-60"
+                            >
+                              {busy ? (
+                                <LoaderCircle
+                                  size={12}
+                                  className="animate-spin"
+                                />
+                              ) : (
+                                <Square size={11} />
+                              )}
+                              End break
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleStartBreak(employee)}
+                              disabled={busy || bulkLoading || !scheduleId}
+                              className="inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md bg-[#1D63D6] text-xs font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                            >
+                              {busy ? (
+                                <LoaderCircle
+                                  size={12}
+                                  className="animate-spin"
+                                />
+                              ) : (
+                                <Play size={11} />
+                              )}
+                              Start
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
 
-        {/* Rows */}
-        {initialLoad ? (
-          <SkeletonRows />
-        ) : filteredEmployees.length === 0 ? (
-          <EmptyState
-            icon={Users}
-            title={
-              presentEmployees.length === 0
-                ? "No present employees"
-                : "No employees match your filters"
-            }
-            description={
-              presentEmployees.length === 0
-                ? "Employees marked present today will appear here."
-                : "Try a different search, department or status."
-            }
-          />
-        ) : (
-          <ul className="divide-y divide-[#EEF3FB]">
-            {filteredEmployees.map((employee) => (
-              <RosterRow
-                key={employee.id}
-                employee={employee}
-                activeBreak={activeBreakByEmployee.get(employee.id)}
-                now={now}
-                selected={selectedSet.has(employee.id)}
-                onToggle={toggleEmployee}
-                scheduleId={selectedSchedules[employee.id]}
-                onScheduleChange={setEmployeeSchedule}
-                onStart={handleStartBreak}
-                onEnd={handleEndBreak}
-                busy={actionEmployeeId === employee.id}
-                bulkLoading={bulkLoading}
-              />
-            ))}
-          </ul>
-        )}
-
-        <div className="flex flex-col gap-2 border-t border-[#EEF3FB] bg-[#F7FAFE] px-5 py-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-          <span>
-            Showing {filteredEmployees.length} of {presentEmployees.length}{" "}
-            present employees
+        {/* Sheet tab */}
+        <div className="flex items-end border-t border-[#E3EAF5] bg-[#F1F5FB] px-3 pt-1">
+          <span className="rounded-t-md border border-b-0 border-t-2 border-[#E3EAF5] border-t-[#1D63D6] bg-white px-4 py-1 text-xs font-semibold text-[#0B3A8C]">
+            Breaktime · {workDate}
           </span>
-          <span className="inline-flex items-center gap-1.5">
-            <Activity size={13} />
-            Live timer · auto-refresh every 15 seconds
+        </div>
+
+        {/* Status bar */}
+        <div className="flex flex-col gap-2 border-t border-[#E3EAF5] bg-[#F7FAFE] px-4 py-2.5 text-xs text-slate-600 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-semibold text-[#0B3A8C]">
+              {bulkLoading
+                ? "Working..."
+                : refreshing
+                  ? "Updating..."
+                  : initialLoad
+                    ? "Loading..."
+                    : "Ready"}
+            </span>
+            <span>
+              Rows: <b className="text-slate-800">{sortedEmployees.length}</b>
+            </span>
+            <span>
+              Present:{" "}
+              <b className="text-slate-800">{presentEmployees.length}</b>
+            </span>
+            <span>
+              On break: <b className="text-[#1D63D6]">{onBreakCount}</b>
+            </span>
+            <span>
+              Near limit: <b className="text-[#C8102E]">{nearLimitCount}</b>
+            </span>
+            <span>
+              Overbreak: <b className="text-[#C8102E]">{exceededCount}</b>
+            </span>
+            {selectedCount > 0 && (
+              <span>
+                Selected: <b className="text-[#1D63D6]">{selectedCount}</b>
+              </span>
+            )}
+          </div>
+
+          <span className="hidden items-center gap-1.5 xl:inline-flex">
+            <Kbd>↑</Kbd>
+            <Kbd>↓</Kbd> move · <Kbd>S</Kbd> start · <Kbd>E</Kbd> end ·{" "}
+            <Kbd>Shift</Kbd> range · click a title to sort
           </span>
         </div>
       </section>
-
-      {/* ===== Sticky group-action bar ===== */}
-      {selectedCount > 0 && (
-        <div className="sticky bottom-3 z-20">
-          <div className="rounded-2xl border border-[#CFE0FA] bg-white p-4 shadow-[0_8px_24px_rgba(11,58,140,0.12)]">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-[#0B3A8C]">
-                  Group action · {selectedCount} selected
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {selectedNotOnBreak.length} not on break ·{" "}
-                  {selectedOnBreak.length} on break ·{" "}
-                  {bulkScheduleId
-                    ? `${eligibleStartEmployees.length} eligible for the chosen schedule`
-                    : "choose a schedule to start breaks"}
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <select
-                  value={bulkScheduleId}
-                  onChange={(event) => setBulkScheduleId(event.target.value)}
-                  disabled={bulkLoading}
-                  aria-label="Group break schedule"
-                  className="h-10 min-w-0 rounded-xl border border-[#E3EAF5] bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD] sm:min-w-[220px]"
-                >
-                  <option value="">Select group break schedule</option>
-                  {groupSchedules.map((schedule) => (
-                    <option key={schedule.id} value={schedule.id}>
-                      {getScheduleLabel(schedule)} · {schedule.duration_minutes}{" "}
-                      min
-                    </option>
-                  ))}
-                </select>
-
-                <button
-                  type="button"
-                  onClick={() => handleBulkAction("break_start")}
-                  disabled={
-                    bulkLoading ||
-                    !bulkScheduleId ||
-                    eligibleStartEmployees.length === 0
-                  }
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-4 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                >
-                  {bulkLoading ? (
-                    <LoaderCircle size={15} className="animate-spin" />
-                  ) : (
-                    <Play size={14} />
-                  )}
-                  Start ({eligibleStartEmployees.length})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleBulkAction("break_end")}
-                  disabled={bulkLoading || selectedOnBreak.length === 0}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#0B3A8C] px-4 text-sm font-semibold text-white transition hover:bg-[#1D63D6] disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-                >
-                  <Square size={13} />
-                  End ({selectedOnBreak.length})
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSelectedEmployees([])}
-                  disabled={bulkLoading}
-                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#E3EAF5] bg-white px-4 text-sm font-semibold text-slate-600 transition hover:border-[#C8102E] hover:text-[#C8102E] disabled:opacity-50"
-                >
-                  <X size={14} />
-                  Clear
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

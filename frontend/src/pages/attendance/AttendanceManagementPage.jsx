@@ -22,6 +22,20 @@ import { api, getApiError } from "../../lib/api";
 const TIME_ZONE = "Asia/Manila";
 
 /**
+ * Spreadsheet-style attendance sheet.
+ *
+ * Mouse
+ *   Click a row ........ select it        Shift+click ... select a range
+ *   Ctrl/Cmd+click ..... add / remove      Drag row # .... select a range
+ *   Double-click the Attendance cell ..... toggle Present / Absent
+ *
+ * Keyboard (click the sheet first)
+ *   ↑ / ↓ ......... move       Shift+↑/↓ ... extend selection
+ *   P / A ......... mark Present / Absent (single row: jumps to the next row)
+ *   Backspace ..... revert selected rows to their saved value
+ *   Ctrl+A ........ select all visible rows
+ *   Ctrl+S ........ save       Esc ........ clear selection
+ *
  * Brand palette (same as Dashboard): white + blue + red, grays for neutrals.
  *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
  *   Red  #C8102E · Light red #FDECEF · Border #E3EAF5
@@ -62,11 +76,6 @@ const getFullName = (employee) =>
     .filter(Boolean)
     .join(" ");
 
-const getInitials = (employee) =>
-  `${(employee?.first_name || "")[0] || ""}${
-    (employee?.last_name || "")[0] || ""
-  }`.toUpperCase() || "?";
-
 const formatShift = (employee) => {
   const shift = employee?.shift;
 
@@ -82,125 +91,32 @@ const formatShift = (employee) => {
   return shift.name || "Assigned shift";
 };
 
+const statusLabel = (status) => {
+  if (status === "present") return "Present";
+  if (status === "absent") return "Absent";
+  if (status) return String(status).replaceAll("_", " ");
+  return "Not recorded";
+};
+
 const isMarked = (status) => status === "present" || status === "absent";
 
+/* ---------- Sheet layout ---------- */
+
+const COLUMNS = [
+  { key: "no", letter: "", label: "", width: 48 },
+  { key: "id", letter: "A", label: "Employee ID", width: 120 },
+  { key: "name", letter: "B", label: "Employee name", width: 240 },
+  { key: "dept", letter: "C", label: "Department", width: 180 },
+  { key: "shift", letter: "D", label: "Assigned shift", width: 210 },
+  { key: "status", letter: "E", label: "Attendance", width: 160 },
+];
+
+const TOTAL_WIDTH = COLUMNS.reduce((sum, column) => sum + column.width, 0);
+const LEFT_OFFSETS = { no: 0, id: 48, name: 168 };
+
+const CELL = "h-9 border-b border-r border-[#E3EAF5] px-3 text-sm";
+
 /* ---------- Building blocks ---------- */
-
-function StatusBadge({ status }) {
-  if (status === "present") {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#1D63D6]" />
-        Present
-      </span>
-    );
-  }
-
-  if (status === "absent") {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FDECEF] px-2.5 py-1 text-xs font-semibold text-[#C8102E]">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#C8102E]" />
-        Absent
-      </span>
-    );
-  }
-
-  if (status) {
-    return (
-      <span className="inline-flex items-center rounded-full border border-[#E3EAF5] bg-[#F7FAFE] px-2.5 py-1 text-xs font-semibold capitalize text-[#0B3A8C]">
-        {String(status).replaceAll("_", " ")}
-      </span>
-    );
-  }
-
-  return (
-    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
-      Not recorded
-    </span>
-  );
-}
-
-function SegmentedStatus({ status, onChange, disabled, label }) {
-  const base =
-    "inline-flex flex-1 items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] disabled:cursor-not-allowed disabled:opacity-50";
-
-  return (
-    <div
-      role="group"
-      aria-label={`Attendance for ${label}`}
-      className="inline-flex w-full overflow-hidden rounded-xl border border-[#E3EAF5] bg-white sm:w-auto"
-    >
-      <button
-        type="button"
-        aria-pressed={status === "present"}
-        disabled={disabled}
-        onClick={() => onChange("present")}
-        className={`${base} ${
-          status === "present"
-            ? "bg-[#1D63D6] text-white"
-            : "text-slate-500 hover:bg-[#EAF1FD] hover:text-[#1D63D6]"
-        }`}
-      >
-        <Check size={14} />
-        Present
-      </button>
-
-      <button
-        type="button"
-        aria-pressed={status === "absent"}
-        disabled={disabled}
-        onClick={() => onChange("absent")}
-        className={`${base} border-l border-[#E3EAF5] ${
-          status === "absent"
-            ? "bg-[#C8102E] text-white"
-            : "text-slate-500 hover:bg-[#FDECEF] hover:text-[#C8102E]"
-        }`}
-      >
-        <X size={14} />
-        Absent
-      </button>
-    </div>
-  );
-}
-
-function Avatar({ employee, active }) {
-  return (
-    <div
-      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-        active ? "bg-[#1D63D6] text-white" : "bg-[#EAF1FD] text-[#1D63D6]"
-      }`}
-    >
-      {getInitials(employee)}
-    </div>
-  );
-}
-
-function SummaryCard({ label, value, icon: Icon, tone, loading, children }) {
-  const tones = {
-    blue: { chip: "bg-[#EAF1FD] text-[#1D63D6]", value: "text-[#0B3A8C]" },
-    red: { chip: "bg-[#FDECEF] text-[#C8102E]", value: "text-[#C8102E]" },
-    gray: { chip: "bg-slate-100 text-slate-500", value: "text-slate-600" },
-  };
-
-  const t = tones[tone] || tones.blue;
-
-  return (
-    <div className="rounded-2xl border border-[#E3EAF5] bg-white p-4 shadow-[0_1px_2px_rgba(11,58,140,0.04)] sm:p-5">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium text-slate-600">{label}</p>
-        <div className={`shrink-0 rounded-lg p-2 ${t.chip}`}>
-          <Icon size={16} strokeWidth={2} />
-        </div>
-      </div>
-
-      <p className={`mt-3 text-3xl font-semibold tracking-tight ${t.value}`}>
-        {loading ? "—" : value}
-      </p>
-
-      {children}
-    </div>
-  );
-}
 
 function Alert({ tone, icon: Icon, children, onDismiss }) {
   const styles =
@@ -231,18 +147,21 @@ function Alert({ tone, icon: Icon, children, onDismiss }) {
   );
 }
 
-function SkeletonRows() {
+function Kbd({ children }) {
   return (
-    <div className="divide-y divide-[#EEF3FB]">
-      {[1, 2, 3, 4, 5, 6].map((item) => (
-        <div key={item} className="flex animate-pulse items-center gap-4 p-4">
-          <div className="h-4 w-4 rounded bg-[#EEF3FB]" />
-          <div className="h-9 w-9 rounded-full bg-[#EEF3FB]" />
-          <div className="flex-1 space-y-2">
-            <div className="h-3 w-40 rounded bg-[#EEF3FB]" />
-            <div className="h-3 w-24 rounded bg-[#EEF3FB]" />
-          </div>
-          <div className="hidden h-8 w-48 rounded-xl bg-[#EEF3FB] sm:block" />
+    <kbd className="rounded border border-[#E3EAF5] bg-white px-1.5 py-0.5 font-sans text-[10px] font-semibold text-slate-500">
+      {children}
+    </kbd>
+  );
+}
+
+function SheetSkeleton() {
+  return (
+    <div className="animate-pulse">
+      {[1, 2, 3, 4, 5, 6, 7, 8].map((row) => (
+        <div key={row} className="flex border-b border-[#EEF3FB]">
+          <div className="h-9 w-12 bg-[#F1F5FB]" />
+          <div className="m-2 h-5 flex-1 rounded bg-[#EEF3FB]" />
         </div>
       ))}
     </div>
@@ -269,6 +188,37 @@ function EmptyState({ hasEmployees }) {
   );
 }
 
+function StatusCell({ status, changed }) {
+  let fill = "bg-white text-slate-400";
+  let text = "—";
+
+  if (status === "present") {
+    fill = "bg-[#EAF1FD] text-[#1D63D6] font-semibold";
+    text = "Present";
+  } else if (status === "absent") {
+    fill = "bg-[#FDECEF] text-[#C8102E] font-semibold";
+    text = "Absent";
+  } else if (status) {
+    fill = "bg-[#F7FAFE] text-[#0B3A8C] font-medium capitalize";
+    text = statusLabel(status);
+  }
+
+  return (
+    <div
+      className={`flex h-full w-full items-center justify-center px-3 ${fill}`}
+    >
+      {text}
+      {changed && (
+        <span
+          aria-hidden="true"
+          title="Unsaved change"
+          className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[9px] border-t-[9px] border-l-transparent border-t-[#1D63D6]"
+        />
+      )}
+    </div>
+  );
+}
+
 /* ---------- Page ---------- */
 
 const STATUS_TABS = [
@@ -284,7 +234,10 @@ export default function AttendanceManagementPage() {
   const [employees, setEmployees] = useState([]);
   const [statusById, setStatusById] = useState({});
   const [originalStatuses, setOriginalStatuses] = useState({});
+
   const [selectedIds, setSelectedIds] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [anchorId, setAnchorId] = useState(null);
 
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("all");
@@ -296,13 +249,16 @@ export default function AttendanceManagementPage() {
   const [success, setSuccess] = useState("");
 
   const today = getManilaDate();
-  const selectAllRef = useRef(null);
+  const gridRef = useRef(null);
+  const dragging = useRef(false);
 
   const loadEmployees = useCallback(async () => {
     setLoading(true);
     setError("");
     setSuccess("");
     setSelectedIds([]);
+    setActiveId(null);
+    setAnchorId(null);
 
     try {
       const response = await api.get(
@@ -397,24 +353,16 @@ export default function AttendanceManagementPage() {
     });
   }, [employees, search, departmentFilter, statusFilter, getBucket]);
 
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const selectedCount = selectedIds.length;
-
   const visibleIds = useMemo(
     () => filteredEmployees.map((employee) => employee.id),
     [filteredEmployees],
   );
 
-  const allVisibleSelected =
-    visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id));
-  const someVisibleSelected = visibleIds.some((id) => selectedSet.has(id));
-
-  useEffect(() => {
-    if (selectAllRef.current) {
-      selectAllRef.current.indeterminate =
-        someVisibleSelected && !allVisibleSelected;
-    }
-  }, [someVisibleSelected, allVisibleSelected]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedCount = selectedIds.length;
+  const activeIndex = activeId ? visibleIds.indexOf(activeId) : -1;
+  const activeEmployee =
+    activeIndex >= 0 ? filteredEmployees[activeIndex] : null;
 
   const visibleUnrecorded = useMemo(
     () => filteredEmployees.filter((employee) => !statusById[employee.id]),
@@ -461,66 +409,169 @@ export default function AttendanceManagementPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [hasUnsaved]);
 
-  /* ----- Actions ----- */
+  /* Stop drag-selecting when the mouse is released anywhere */
+  useEffect(() => {
+    const stop = () => {
+      dragging.current = false;
+    };
 
-  const confirmDiscard = () =>
-    !hasUnsaved ||
-    window.confirm(
-      "You have unsaved attendance changes. Continue and discard them?",
-    );
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, []);
 
-  const changeDate = (next) => {
-    if (!next || next === workDate || next > today) return;
-    if (!confirmDiscard()) return;
-    setWorkDate(next);
+  /* Keep the active row visible while moving with the keyboard */
+  useEffect(() => {
+    if (!activeId) return;
+
+    gridRef.current
+      ?.querySelector(`[data-row="${activeId}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeId]);
+
+  /* ----- Selection ----- */
+
+  const focusGrid = () => gridRef.current?.focus({ preventScroll: true });
+
+  const extendTo = (id) => {
+    const from = visibleIds.indexOf(anchorId ?? activeId ?? id);
+    const to = visibleIds.indexOf(id);
+
+    if (to < 0) return;
+
+    const start = Math.min(from < 0 ? to : from, to);
+    const end = Math.max(from < 0 ? to : from, to);
+
+    if (!anchorId) setAnchorId(activeId ?? id);
+
+    setSelectedIds(visibleIds.slice(start, end + 1));
+    setActiveId(id);
   };
 
-  const handleRefresh = () => {
-    if (!confirmDiscard()) return;
-    loadEmployees();
-  };
+  const selectRow = (event, id) => {
+    focusGrid();
 
-  const toggleEmployee = (employeeId) => {
-    setSelectedIds((current) =>
-      current.includes(employeeId)
-        ? current.filter((id) => id !== employeeId)
-        : [...current, employeeId],
-    );
-  };
-
-  const toggleSelectAll = () => {
-    if (allVisibleSelected) {
-      setSelectedIds((current) =>
-        current.filter((id) => !visibleIds.includes(id)),
-      );
+    if (event.shiftKey) {
+      extendTo(id);
       return;
     }
 
-    setSelectedIds((current) =>
-      Array.from(new Set([...current, ...visibleIds])),
-    );
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedIds((current) =>
+        current.includes(id)
+          ? current.filter((item) => item !== id)
+          : [...current, id],
+      );
+      setActiveId(id);
+      setAnchorId(id);
+      return;
+    }
+
+    setSelectedIds([id]);
+    setActiveId(id);
+    setAnchorId(id);
   };
 
-  const markSelected = (status) => {
-    if (selectedIds.length === 0) return;
+  const handleGutterMouseDown = (event, id) => {
+    event.preventDefault();
+    dragging.current = true;
+    selectRow(event, id);
+  };
+
+  const handleGutterEnter = (id) => {
+    if (dragging.current) extendTo(id);
+  };
+
+  const moveActive = (delta, extend) => {
+    if (visibleIds.length === 0) return;
+
+    const current = activeId ? visibleIds.indexOf(activeId) : -1;
+    const next = Math.min(
+      visibleIds.length - 1,
+      Math.max(0, current < 0 ? 0 : current + delta),
+    );
+    const id = visibleIds[next];
+
+    if (extend) {
+      extendTo(id);
+    } else {
+      setActiveId(id);
+      setAnchorId(id);
+      setSelectedIds([id]);
+    }
+  };
+
+  const selectAllVisible = () => {
+    setSelectedIds(visibleIds);
+    if (!activeId && visibleIds.length) {
+      setActiveId(visibleIds[0]);
+      setAnchorId(visibleIds[0]);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
+    setAnchorId(null);
+  };
+
+  /* ----- Editing ----- */
+
+  const getTargets = () => {
+    if (selectedIds.length > 0) return selectedIds;
+    return activeId ? [activeId] : [];
+  };
+
+  const applyStatus = (status, advance = false) => {
+    const targets = getTargets();
+
+    if (targets.length === 0) return;
 
     setStatusById((current) => {
       const updated = { ...current };
-      selectedIds.forEach((id) => {
+      targets.forEach((id) => {
         updated[id] = status;
       });
       return updated;
     });
 
     setSuccess("");
+
+    // Single row: jump to the next one, like data entry in a spreadsheet
+    if (advance && targets.length === 1) {
+      const nextId = visibleIds[visibleIds.indexOf(targets[0]) + 1];
+
+      if (nextId) {
+        setActiveId(nextId);
+        setAnchorId(nextId);
+        setSelectedIds([nextId]);
+      }
+    }
   };
 
-  const markEmployee = (employeeId, status) => {
-    setStatusById((current) => ({ ...current, [employeeId]: status }));
+  const revertSelection = () => {
+    const targets = getTargets();
+
+    if (targets.length === 0) return;
+
+    setStatusById((current) => {
+      const updated = { ...current };
+      targets.forEach((id) => {
+        updated[id] = originalStatuses[id] ?? null;
+      });
+      return updated;
+    });
+  };
+
+  const toggleRow = (id) => {
+    const current = statusById[id];
+
+    setStatusById((all) => ({
+      ...all,
+      [id]: current === "present" ? "absent" : "present",
+    }));
     setSuccess("");
   };
 
-  const markUnrecordedPresent = () => {
+  const fillUnrecordedPresent = () => {
     if (visibleUnrecorded.length === 0) return;
 
     setStatusById((current) => {
@@ -536,11 +587,12 @@ export default function AttendanceManagementPage() {
 
   const discardChanges = () => {
     setStatusById({ ...originalStatuses });
-    setSelectedIds([]);
     setError("");
   };
 
   const saveChanges = async () => {
+    if (saving || loading) return;
+
     if (changedEntries.length === 0) {
       setError("There are no attendance changes to save.");
       return;
@@ -559,7 +611,6 @@ export default function AttendanceManagementPage() {
       const result = response.data?.data || {};
 
       setOriginalStatuses({ ...statusById });
-      setSelectedIds([]);
 
       setSuccess(
         response.data?.message ||
@@ -572,10 +623,92 @@ export default function AttendanceManagementPage() {
     }
   };
 
+  /* ----- Navigation guards ----- */
+
+  const confirmDiscard = () =>
+    !hasUnsaved ||
+    window.confirm(
+      "You have unsaved attendance changes. Continue and discard them?",
+    );
+
+  const changeDate = (next) => {
+    if (!next || next === workDate || next > today) return;
+    if (!confirmDiscard()) return;
+    setWorkDate(next);
+  };
+
+  const handleRefresh = () => {
+    if (!confirmDiscard()) return;
+    loadEmployees();
+  };
+
+  /* ----- Keyboard ----- */
+
+  const handleKeyDown = (event) => {
+    const key = event.key.toLowerCase();
+    const mod = event.ctrlKey || event.metaKey;
+
+    if (mod && key === "s") {
+      event.preventDefault();
+      saveChanges();
+      return;
+    }
+
+    if (mod && key === "a") {
+      event.preventDefault();
+      selectAllVisible();
+      return;
+    }
+
+    if (mod || event.altKey) return;
+
+    if (key === "arrowdown" || key === "arrowup") {
+      event.preventDefault();
+      moveActive(key === "arrowdown" ? 1 : -1, event.shiftKey);
+      return;
+    }
+
+    if (key === "p") {
+      event.preventDefault();
+      applyStatus("present", true);
+      return;
+    }
+
+    if (key === "a") {
+      event.preventDefault();
+      applyStatus("absent", true);
+      return;
+    }
+
+    if (key === "backspace" || key === "delete") {
+      event.preventDefault();
+      revertSelection();
+      return;
+    }
+
+    if (key === "escape") {
+      clearSelection();
+    }
+  };
+
   const busy = loading || saving;
+  const hasTargets = selectedCount > 0 || Boolean(activeId);
+
+  const nameBox =
+    selectedCount > 1
+      ? `${selectedCount} rows`
+      : activeIndex >= 0
+        ? `E${activeIndex + 2}`
+        : "—";
+
+  const formulaText = activeEmployee
+    ? `${getFullName(activeEmployee) || "Unnamed employee"} · ${
+        activeEmployee.employee_number || "No ID"
+      } — ${statusLabel(statusById[activeEmployee.id])}`
+    : "Click a row, then press P for Present or A for Absent.";
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-5 pb-6">
       {/* ===== Header ===== */}
       <header className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
         <div className="flex h-1.5">
@@ -583,7 +716,7 @@ export default function AttendanceManagementPage() {
           <div className="flex-1 bg-[#1D63D6]" />
         </div>
 
-        <div className="flex flex-col gap-5 p-5 sm:p-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-[#1D63D6]">
               <ClipboardCheck size={16} />
@@ -595,12 +728,11 @@ export default function AttendanceManagementPage() {
             </h1>
 
             <p className="mt-0.5 text-sm text-slate-500">
-              Record daily attendance as Present or Absent.
+              Record daily attendance in the sheet below.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Date navigator */}
             <div className="flex items-center gap-1 rounded-xl border border-[#E3EAF5] bg-[#F7FAFE] p-1">
               <button
                 type="button"
@@ -677,127 +809,63 @@ export default function AttendanceManagementPage() {
         </Alert>
       )}
 
-      {/* ===== Summary ===== */}
+      {/* ===== Sheet ===== */}
       <section
-        aria-label="Attendance summary"
-        className="grid grid-cols-2 gap-4 xl:grid-cols-4"
+        aria-label="Attendance sheet"
+        className="flex flex-col overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]"
+        style={{ height: "calc(100vh - 15rem)", minHeight: 520 }}
       >
-        <SummaryCard
-          label="Total employees"
-          value={summary.total}
-          icon={Users}
-          tone="blue"
-          loading={loading}
-        >
-          <div className="mt-3">
-            <div className="h-1.5 overflow-hidden rounded-full bg-[#EEF3FB]">
-              <div
-                className="h-full rounded-full bg-[#1D63D6] transition-all duration-500"
-                style={{ width: `${loading ? 0 : recordedPct}%` }}
-              />
-            </div>
-            <p className="mt-1.5 text-xs text-slate-500">
-              {loading ? "" : `${recorded} of ${summary.total} recorded`}
-            </p>
-          </div>
-        </SummaryCard>
-
-        <SummaryCard
-          label="Present"
-          value={summary.present}
-          icon={CheckCheck}
-          tone="blue"
-          loading={loading}
-        />
-
-        <SummaryCard
-          label="Absent"
-          value={summary.absent}
-          icon={X}
-          tone="red"
-          loading={loading}
-        />
-
-        <SummaryCard
-          label="Not recorded"
-          value={summary.unrecorded}
-          icon={ClipboardCheck}
-          tone="gray"
-          loading={loading}
-        />
-      </section>
-
-      {/* ===== Employee list ===== */}
-      <section className="overflow-hidden rounded-2xl border border-[#E3EAF5] bg-white shadow-[0_1px_2px_rgba(11,58,140,0.04)]">
         {/* Toolbar */}
-        <div className="space-y-4 border-b border-[#EEF3FB] p-4 sm:p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold text-[#0B3A8C]">
-                Employee attendance
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Mark individually, or select several and apply in bulk.
-              </p>
-            </div>
-
-            <span className="shrink-0 rounded-full bg-[#EAF1FD] px-2.5 py-1 text-xs font-semibold text-[#1D63D6]">
-              {filteredEmployees.length} shown
-            </span>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-[1fr_240px]">
-            <div className="relative">
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                type="text"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search employee name or number..."
-                aria-label="Search employees"
-                className="w-full rounded-xl border border-[#E3EAF5] py-2.5 pl-10 pr-9 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => setSearch("")}
-                  aria-label="Clear search"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-
-            <div className="relative">
-              <Filter
-                size={15}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <select
-                value={departmentFilter}
-                onChange={(event) => setDepartmentFilter(event.target.value)}
-                aria-label="Filter by department"
-                className="w-full appearance-none rounded-xl border border-[#E3EAF5] bg-white py-2.5 pl-9 pr-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+        <div className="flex flex-col gap-3 border-b border-[#E3EAF5] p-3 lg:flex-row lg:items-center">
+          <div className="relative lg:w-72">
+            <Search
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search name or employee number..."
+              aria-label="Search employees"
+              className="h-9 w-full rounded-lg border border-[#E3EAF5] pl-9 pr-8 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-600"
               >
-                <option value="all">All departments</option>
-                {departments.map((department) => (
-                  <option key={department.id} value={department.id}>
-                    {department.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <X size={13} />
+              </button>
+            )}
           </div>
 
-          {/* Status tabs */}
+          <div className="relative lg:w-52">
+            <Filter
+              size={14}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <select
+              value={departmentFilter}
+              onChange={(event) => setDepartmentFilter(event.target.value)}
+              aria-label="Filter by department"
+              className="h-9 w-full appearance-none rounded-lg border border-[#E3EAF5] bg-white pl-8 pr-3 text-sm text-slate-700 outline-none focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
+            >
+              <option value="all">All departments</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div
             role="tablist"
             aria-label="Filter by status"
-            className="-mx-1 flex gap-1.5 overflow-x-auto px-1 pb-0.5"
+            className="flex gap-1.5 overflow-x-auto lg:flex-1"
           >
             {STATUS_TABS.filter(
               (tab) => tab.key !== "other" || summary.other > 0,
@@ -811,7 +879,7 @@ export default function AttendanceManagementPage() {
                   role="tab"
                   aria-selected={active}
                   onClick={() => setStatusFilter(tab.key)}
-                  className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition ${
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
                     active
                       ? "border-[#1D63D6] bg-[#1D63D6] text-white"
                       : "border-[#E3EAF5] bg-white text-slate-600 hover:border-[#1D63D6] hover:text-[#1D63D6]"
@@ -831,291 +899,283 @@ export default function AttendanceManagementPage() {
               );
             })}
           </div>
+
+          <button
+            type="button"
+            onClick={fillUnrecordedPresent}
+            disabled={busy || visibleUnrecorded.length === 0}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#E3EAF5] bg-white px-3 text-xs font-semibold text-[#1D63D6] transition hover:border-[#1D63D6] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <CheckCheck size={14} />
+            Fill {visibleUnrecorded.length || ""} unrecorded as Present
+          </button>
         </div>
 
-        {/* Selection / bulk bar */}
-        <div
-          className={`flex flex-col gap-3 border-b px-4 py-3 transition-colors sm:flex-row sm:items-center sm:justify-between sm:px-5 ${
-            selectedCount > 0
-              ? "border-[#CFE0FA] bg-[#EAF1FD]"
-              : "border-[#EEF3FB] bg-[#F7FAFE]"
-          }`}
-        >
-          <label className="flex cursor-pointer items-center gap-3">
-            <input
-              ref={selectAllRef}
-              type="checkbox"
-              checked={allVisibleSelected}
-              onChange={toggleSelectAll}
-              disabled={loading || filteredEmployees.length === 0}
-              className="h-4 w-4 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
-            />
-            <div>
-              <p className="text-sm font-semibold text-[#0B3A8C]">
-                {selectedCount > 0
-                  ? `${selectedCount} selected`
-                  : "Select all visible"}
-              </p>
-              {selectedCount > 0 && (
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    setSelectedIds([]);
-                  }}
-                  className="text-xs font-medium text-[#1D63D6] hover:underline"
-                >
-                  Clear selection
-                </button>
-              )}
-            </div>
-          </label>
+        {/* Formula bar */}
+        <div className="flex items-center gap-3 border-b border-[#E3EAF5] bg-[#F7FAFE] px-3 py-2">
+          <div className="w-20 shrink-0 rounded-md border border-[#E3EAF5] bg-white px-2 py-1 text-center text-xs font-semibold text-[#0B3A8C]">
+            {nameBox}
+          </div>
 
-          {selectedCount > 0 ? (
-            <div className="grid grid-cols-2 gap-2 sm:flex">
-              <button
-                type="button"
-                onClick={() => markSelected("present")}
-                disabled={busy}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Check size={15} />
-                Mark present
-              </button>
+          <span className="font-serif text-sm italic text-slate-400">fx</span>
 
-              <button
-                type="button"
-                onClick={() => markSelected("absent")}
-                disabled={busy}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#C8102E] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#A80D26] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <X size={15} />
-                Mark absent
-              </button>
-            </div>
-          ) : (
+          <p className="min-w-0 flex-1 truncate text-sm text-slate-700">
+            {formulaText}
+          </p>
+
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               type="button"
-              onClick={markUnrecordedPresent}
-              disabled={busy || visibleUnrecorded.length === 0}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#E3EAF5] bg-white px-3.5 py-2 text-sm font-semibold text-[#1D63D6] transition hover:border-[#1D63D6] disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => applyStatus("present", true)}
+              disabled={busy || !hasTargets}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1D63D6] px-3 text-xs font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <CheckCheck size={15} />
-              Mark {visibleUnrecorded.length || ""} not recorded as present
+              <Check size={13} />
+              Present
+              <span className="hidden lg:inline">
+                <Kbd>P</Kbd>
+              </span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => applyStatus("absent", true)}
+              disabled={busy || !hasTargets}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#C8102E] px-3 text-xs font-semibold text-white transition hover:bg-[#A80D26] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <X size={13} />
+              Absent
+              <span className="hidden lg:inline">
+                <Kbd>A</Kbd>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={revertSelection}
+              disabled={busy || !hasTargets}
+              aria-label="Revert selected rows"
+              title="Revert to saved (Backspace)"
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-[#E3EAF5] bg-white px-2.5 text-slate-500 transition hover:border-[#1D63D6] hover:text-[#1D63D6] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Grid */}
+        <div
+          ref={gridRef}
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          aria-label="Attendance grid. Use arrow keys to move, P for present, A for absent."
+          className="relative min-h-0 flex-1 select-none overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6]/40"
+        >
+          {loading ? (
+            <SheetSkeleton />
+          ) : filteredEmployees.length === 0 ? (
+            <EmptyState hasEmployees={employees.length > 0} />
+          ) : (
+            <table
+              className="table-fixed border-separate border-spacing-0"
+              style={{ width: TOTAL_WIDTH, minWidth: "100%" }}
+            >
+              <colgroup>
+                {COLUMNS.map((column) => (
+                  <col key={column.key} style={{ width: column.width }} />
+                ))}
+              </colgroup>
+
+              <thead>
+                {/* Column letters */}
+                <tr>
+                  {COLUMNS.map((column) => (
+                    <th
+                      key={column.key}
+                      style={
+                        LEFT_OFFSETS[column.key] !== undefined
+                          ? { left: LEFT_OFFSETS[column.key] }
+                          : undefined
+                      }
+                      className={`sticky top-0 h-6 border-b border-r border-[#E3EAF5] bg-[#F1F5FB] text-center text-[11px] font-medium text-slate-400 ${
+                        LEFT_OFFSETS[column.key] !== undefined ? "z-30" : "z-20"
+                      }`}
+                    >
+                      {column.letter}
+                    </th>
+                  ))}
+                </tr>
+
+                {/* Column names */}
+                <tr>
+                  {COLUMNS.map((column) => (
+                    <th
+                      key={column.key}
+                      style={{
+                        top: 24,
+                        ...(LEFT_OFFSETS[column.key] !== undefined
+                          ? { left: LEFT_OFFSETS[column.key] }
+                          : {}),
+                      }}
+                      className={`sticky h-9 border-b-2 border-r border-b-[#CFE0FA] border-r-[#E3EAF5] bg-[#F7FAFE] px-3 text-left text-xs font-semibold text-slate-600 ${
+                        LEFT_OFFSETS[column.key] !== undefined ? "z-30" : "z-20"
+                      } ${column.key === "status" ? "text-center" : ""}`}
+                    >
+                      {column.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+
+              <tbody>
+                {filteredEmployees.map((employee, index) => {
+                  const selected = selectedSet.has(employee.id);
+                  const active = activeId === employee.id;
+                  const status = statusById[employee.id];
+                  const changed =
+                    isMarked(status) &&
+                    status !== originalStatuses[employee.id];
+
+                  const rowBg = selected
+                    ? "bg-[#EAF1FD]"
+                    : "bg-white group-hover:bg-[#F7FAFE]";
+
+                  let gutter = "bg-[#F1F5FB] text-slate-500";
+                  if (active) gutter = "bg-[#1D63D6] text-white";
+                  else if (selected) gutter = "bg-[#CFE0FA] text-[#0B3A8C]";
+
+                  return (
+                    <tr
+                      key={employee.id}
+                      data-row={employee.id}
+                      onMouseDown={(event) => {
+                        if (event.button !== 0) return;
+                        selectRow(event, employee.id);
+                      }}
+                      className="group scroll-mt-16"
+                    >
+                      <td
+                        style={{ left: LEFT_OFFSETS.no }}
+                        onMouseDown={(event) => {
+                          event.stopPropagation();
+                          if (event.button !== 0) return;
+                          handleGutterMouseDown(event, employee.id);
+                        }}
+                        onMouseEnter={() => handleGutterEnter(employee.id)}
+                        className={`${CELL} sticky z-10 cursor-pointer text-center text-xs font-medium ${gutter}`}
+                      >
+                        {index + 1}
+                      </td>
+
+                      <td
+                        style={{ left: LEFT_OFFSETS.id }}
+                        className={`${CELL} sticky z-10 truncate text-slate-600 ${rowBg}`}
+                      >
+                        {employee.employee_number || "—"}
+                      </td>
+
+                      <td
+                        style={{ left: LEFT_OFFSETS.name }}
+                        className={`${CELL} sticky z-10 truncate font-semibold text-[#0B3A8C] ${rowBg}`}
+                      >
+                        {getFullName(employee) || "Unnamed employee"}
+                      </td>
+
+                      <td
+                        className={`${CELL} truncate text-slate-600 ${rowBg}`}
+                      >
+                        {employee.department_name || "Unassigned"}
+                      </td>
+
+                      <td
+                        className={`${CELL} truncate text-slate-600 ${rowBg}`}
+                      >
+                        {formatShift(employee)}
+                      </td>
+
+                      <td
+                        onDoubleClick={() => toggleRow(employee.id)}
+                        title="Double-click to toggle Present / Absent"
+                        className={`${CELL} relative cursor-cell p-0 ${
+                          active
+                            ? "outline outline-2 -outline-offset-2 outline-[#1D63D6]"
+                            : ""
+                        }`}
+                      >
+                        <StatusCell status={status} changed={changed} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
 
-        {/* Body */}
-        {loading ? (
-          <SkeletonRows />
-        ) : filteredEmployees.length === 0 ? (
-          <EmptyState hasEmployees={employees.length > 0} />
-        ) : (
-          <>
-            {/* Desktop table */}
-            <div className="hidden overflow-x-auto md:block">
-              <table className="w-full text-left">
-                <thead className="bg-white text-xs font-medium text-slate-500">
-                  <tr className="border-b border-[#EEF3FB]">
-                    <th className="w-12 px-5 py-3 font-medium">
-                      <span className="sr-only">Select</span>
-                    </th>
-                    <th className="px-4 py-3 font-medium">Employee</th>
-                    <th className="px-4 py-3 font-medium">Department</th>
-                    <th className="px-4 py-3 font-medium">Assigned shift</th>
-                    <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-5 py-3 text-right font-medium">
-                      Mark as
-                    </th>
-                  </tr>
-                </thead>
+        {/* Sheet tab */}
+        <div className="flex items-end border-t border-[#E3EAF5] bg-[#F1F5FB] px-3 pt-1">
+          <span className="rounded-t-md border border-b-0 border-t-2 border-[#E3EAF5] border-t-[#1D63D6] bg-white px-4 py-1 text-xs font-semibold text-[#0B3A8C]">
+            Attendance · {workDate}
+          </span>
+        </div>
 
-                <tbody className="divide-y divide-[#EEF3FB]">
-                  {filteredEmployees.map((employee) => {
-                    const selected = selectedSet.has(employee.id);
-                    const status = statusById[employee.id];
-                    const changed =
-                      isMarked(status) &&
-                      status !== originalStatuses[employee.id];
-                    const fullName = getFullName(employee);
-
-                    return (
-                      <tr
-                        key={employee.id}
-                        className={`transition ${
-                          selected ? "bg-[#F7FAFE]" : "hover:bg-[#F7FAFE]"
-                        }`}
-                      >
-                        <td
-                          className={`px-5 py-3.5 ${
-                            changed ? "shadow-[inset_3px_0_0_0_#1D63D6]" : ""
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() => toggleEmployee(employee.id)}
-                            aria-label={`Select ${fullName}`}
-                            className="h-4 w-4 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
-                          />
-                        </td>
-
-                        <td className="px-4 py-3.5">
-                          <div className="flex items-center gap-3">
-                            <Avatar employee={employee} active={selected} />
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                                {fullName || "Unnamed employee"}
-                              </p>
-                              <p className="mt-0.5 text-xs text-slate-500">
-                                {employee.employee_number ||
-                                  "No employee number"}
-                              </p>
-                            </div>
-                          </div>
-                        </td>
-
-                        <td className="px-4 py-3.5 text-sm text-slate-600">
-                          {employee.department_name || "Unassigned"}
-                        </td>
-
-                        <td className="px-4 py-3.5 text-sm text-slate-600">
-                          {formatShift(employee)}
-                        </td>
-
-                        <td className="px-4 py-3.5">
-                          <div className="flex flex-col items-start gap-1">
-                            <StatusBadge status={status} />
-                            {changed && (
-                              <span className="text-[11px] font-medium text-[#1D63D6]">
-                                Unsaved
-                              </span>
-                            )}
-                          </div>
-                        </td>
-
-                        <td className="px-5 py-3.5">
-                          <div className="flex justify-end">
-                            <SegmentedStatus
-                              status={status}
-                              disabled={saving}
-                              label={fullName}
-                              onChange={(next) =>
-                                markEmployee(employee.id, next)
-                              }
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Mobile cards */}
-            <ul className="divide-y divide-[#EEF3FB] md:hidden">
-              {filteredEmployees.map((employee) => {
-                const selected = selectedSet.has(employee.id);
-                const status = statusById[employee.id];
-                const changed =
-                  isMarked(status) && status !== originalStatuses[employee.id];
-                const fullName = getFullName(employee);
-
-                return (
-                  <li
-                    key={employee.id}
-                    className={`space-y-3 p-4 ${
-                      selected ? "bg-[#F7FAFE]" : ""
-                    } ${changed ? "shadow-[inset_3px_0_0_0_#1D63D6]" : ""}`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleEmployee(employee.id)}
-                        aria-label={`Select ${fullName}`}
-                        className="mt-2.5 h-4 w-4 rounded border-slate-300 text-[#1D63D6] focus:ring-[#1D63D6]"
-                      />
-
-                      <Avatar employee={employee} active={selected} />
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="truncate text-sm font-semibold text-[#0B3A8C]">
-                            {fullName || "Unnamed employee"}
-                          </p>
-                          <StatusBadge status={status} />
-                        </div>
-
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {employee.employee_number || "No employee number"}
-                          {" · "}
-                          {employee.department_name || "Unassigned"}
-                        </p>
-                        <p className="mt-0.5 text-xs text-slate-500">
-                          {formatShift(employee)}
-                        </p>
-
-                        {changed && (
-                          <p className="mt-1 text-[11px] font-medium text-[#1D63D6]">
-                            Unsaved change
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <SegmentedStatus
-                      status={status}
-                      disabled={saving}
-                      label={fullName}
-                      onChange={(next) => markEmployee(employee.id, next)}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-          </>
-        )}
-      </section>
-
-      {/* ===== Sticky save bar ===== */}
-      <div className="sticky bottom-3 z-20">
-        <div
-          className={`flex flex-col gap-3 rounded-2xl border p-4 shadow-[0_8px_24px_rgba(11,58,140,0.10)] transition sm:flex-row sm:items-center sm:justify-between ${
-            hasUnsaved
-              ? "border-[#CFE0FA] bg-white"
-              : "border-[#E3EAF5] bg-white/90"
-          }`}
-        >
-          <p className="flex items-center gap-2 text-sm text-slate-600">
-            {hasUnsaved ? (
-              <>
-                <span className="h-2 w-2 animate-pulse rounded-full bg-[#C8102E]" />
-                <span>
-                  <span className="font-semibold text-[#0B3A8C]">
-                    {changedEntries.length}
-                  </span>{" "}
-                  unsaved change{changedEntries.length === 1 ? "" : "s"}
-                </span>
-              </>
-            ) : (
-              <>
-                <CheckCircle2 size={16} className="text-[#1D63D6]" />
-                All attendance changes are saved.
-              </>
+        {/* Status bar */}
+        <div className="flex flex-col gap-3 border-t border-[#E3EAF5] bg-[#F7FAFE] px-4 py-2.5 text-xs text-slate-600 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-semibold text-[#0B3A8C]">
+              {saving ? "Saving..." : loading ? "Loading..." : "Ready"}
+            </span>
+            <span>
+              Rows: <b className="text-slate-800">{filteredEmployees.length}</b>
+            </span>
+            <span>
+              Present: <b className="text-[#1D63D6]">{summary.present}</b>
+            </span>
+            <span>
+              Absent: <b className="text-[#C8102E]">{summary.absent}</b>
+            </span>
+            <span>
+              Not recorded:{" "}
+              <b className="text-slate-800">{summary.unrecorded}</b>
+            </span>
+            <span>
+              Recorded: <b className="text-slate-800">{recordedPct}%</b>
+            </span>
+            {selectedCount > 0 && (
+              <span>
+                Selected: <b className="text-[#1D63D6]">{selectedCount}</b>
+              </span>
             )}
-          </p>
+            <span className="hidden items-center gap-1.5 xl:inline-flex">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd> move · <Kbd>P</Kbd> / <Kbd>A</Kbd> mark ·{" "}
+              <Kbd>Shift</Kbd> range · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save
+            </span>
+          </div>
 
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            <p className="mr-1 flex items-center gap-1.5">
+              {hasUnsaved ? (
+                <>
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-[#C8102E]" />
+                  <b className="text-[#0B3A8C]">{changedEntries.length}</b>{" "}
+                  unsaved
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={14} className="text-[#1D63D6]" />
+                  All saved
+                </>
+              )}
+            </p>
+
             <button
               type="button"
               onClick={discardChanges}
               disabled={!hasUnsaved || busy}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-[#E3EAF5] bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 transition hover:border-[#C8102E] hover:text-[#C8102E] disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#E3EAF5] bg-white px-3 text-xs font-semibold text-slate-600 transition hover:border-[#C8102E] hover:text-[#C8102E] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <RotateCcw size={15} />
+              <RotateCcw size={13} />
               Discard
             </button>
 
@@ -1123,16 +1183,17 @@ export default function AttendanceManagementPage() {
               type="button"
               onClick={saveChanges}
               disabled={!hasUnsaved || busy}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#1D63D6] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#0B3A8C] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none"
+              title="Save (Ctrl+S)"
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#1D63D6] px-4 text-xs font-semibold text-white transition hover:bg-[#0B3A8C] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1D63D6] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Save size={16} />
+              <Save size={14} />
               {saving
                 ? "Saving..."
                 : `Save changes${hasUnsaved ? ` (${changedEntries.length})` : ""}`}
             </button>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
