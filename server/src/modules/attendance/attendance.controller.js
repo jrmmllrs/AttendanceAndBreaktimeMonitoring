@@ -1410,7 +1410,7 @@ export const saveBulkAttendance = async (req, res) => {
       return sendError(res, 400, "Select at least one employee.");
     }
 
-    const allowedStatuses = ["present", "absent"];
+const allowedStatuses = ["present", "absent", "on_leave"];
 
     const employeeIds = [];
     const normalizedEntries = [];

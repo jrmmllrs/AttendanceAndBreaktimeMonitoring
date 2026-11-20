@@ -28,7 +28,8 @@ const TIME_ZONE = "Asia/Manila";
  * Mouse
  *   Click a row ........ select it        Shift+click ... select a range
  *   Ctrl/Cmd+click ..... add / remove      Drag row # .... select a range
- *   Click a column title (Name, Department, Status, Remaining) to sort.
+ *   Click a column title (Name, Department, Position, Status, Remaining)
+ *   to sort. Click again for descending, a third time to clear the sort.
  *
  * Keyboard (click the sheet first)
  *   ↑ / ↓ ......... move       Shift+↑/↓ ... extend selection
@@ -41,6 +42,9 @@ const TIME_ZONE = "Asia/Manila";
  *   Red  #C8102E · Light red #FDECEF · Soft red #EE8696 · Border #E3EAF5
  *
  * Break states:  normal = blue · near limit = soft red · overbreak = solid red
+ *
+ * Position: read from `position_name` on each employee returned by
+ * /attendance/management/manual-employees (and on active breaks, if present).
  */
 
 /* ---------- Helpers ---------- */
@@ -104,6 +108,10 @@ function getEmployeeName(employee) {
   return [employee?.first_name, employee?.middle_name, employee?.last_name]
     .filter(Boolean)
     .join(" ");
+}
+
+function getPositionName(employee) {
+  return employee?.position_name || employee?.position?.name || "";
 }
 
 function getErrorMessage(error, fallback) {
@@ -177,16 +185,17 @@ const COLUMNS = [
   { key: "id", letter: "A", label: "Employee ID", width: 110 },
   { key: "name", letter: "B", label: "Employee name", width: 230 },
   { key: "dept", letter: "C", label: "Department", width: 160 },
-  { key: "status", letter: "D", label: "Status", width: 130 },
-  { key: "schedule", letter: "E", label: "Break / schedule", width: 250 },
-  { key: "started", letter: "F", label: "Started", width: 100 },
-  { key: "elapsed", letter: "G", label: "Elapsed", width: 100 },
-  { key: "allowed", letter: "H", label: "Allowed", width: 90 },
-  { key: "remaining", letter: "I", label: "Remaining", width: 180 },
-  { key: "action", letter: "J", label: "Action", width: 130 },
+  { key: "position", letter: "D", label: "Position", width: 170 },
+  { key: "status", letter: "E", label: "Status", width: 130 },
+  { key: "schedule", letter: "F", label: "Break / schedule", width: 250 },
+  { key: "started", letter: "G", label: "Started", width: 100 },
+  { key: "elapsed", letter: "H", label: "Elapsed", width: 100 },
+  { key: "allowed", letter: "I", label: "Allowed", width: 90 },
+  { key: "remaining", letter: "J", label: "Remaining", width: 180 },
+  { key: "action", letter: "K", label: "Action", width: 130 },
 ];
 
-const SORTABLE = new Set(["name", "dept", "status", "remaining"]);
+const SORTABLE = new Set(["name", "dept", "position", "status", "remaining"]);
 const TOTAL_WIDTH = COLUMNS.reduce((sum, column) => sum + column.width, 0);
 const LEFT_OFFSETS = { no: 0, id: 48, name: 158 };
 
@@ -474,6 +483,8 @@ export default function BreaktimeMonitoringPage() {
         employee_number: item.employee_number,
         department_id: item.department_id,
         department_name: item.department_name,
+        position_id: item.position_id || null,
+        position_name: item.position_name || null,
         break_schedules: [],
         break_records: [],
         _notPresent: true,
@@ -523,11 +534,13 @@ export default function BreaktimeMonitoringPage() {
       const employeeNumber = String(
         employee.employee_number || "",
       ).toLowerCase();
+      const positionName = getPositionName(employee).toLowerCase();
 
       const matchesSearch =
         !normalizedSearch ||
         fullName.includes(normalizedSearch) ||
-        employeeNumber.includes(normalizedSearch);
+        employeeNumber.includes(normalizedSearch) ||
+        positionName.includes(normalizedSearch);
 
       const matchesDepartment =
         departmentFilter === "all" ||
@@ -574,6 +587,27 @@ export default function BreaktimeMonitoringPage() {
           String(a.department_name || "")
             .toLowerCase()
             .localeCompare(String(b.department_name || "").toLowerCase()) * dir
+        );
+      }
+
+      if (sort.key === "position") {
+        const aPosition = getPositionName(a).toLowerCase();
+        const bPosition = getPositionName(b).toLowerCase();
+
+        // Employees without a position always go last
+        if (!aPosition && !bPosition) {
+          return getEmployeeName(a)
+            .toLowerCase()
+            .localeCompare(getEmployeeName(b).toLowerCase());
+        }
+        if (!aPosition) return 1;
+        if (!bPosition) return -1;
+
+        return (
+          aPosition.localeCompare(bPosition) * dir ||
+          getEmployeeName(a)
+            .toLowerCase()
+            .localeCompare(getEmployeeName(b).toLowerCase())
         );
       }
 
@@ -963,6 +997,10 @@ export default function BreaktimeMonitoringPage() {
   if (activeEmployee) {
     const who = `${getEmployeeName(activeEmployee) || "Unnamed employee"} · ${
       activeEmployee.employee_number || "No ID"
+    }${
+      getPositionName(activeEmployee)
+        ? ` · ${getPositionName(activeEmployee)}`
+        : ""
     }`;
 
     if (activeInfo) {
@@ -982,7 +1020,7 @@ export default function BreaktimeMonitoringPage() {
     selectedCount > 1
       ? `${selectedCount} rows`
       : activeIndex >= 0
-        ? `D${activeIndex + 2}`
+        ? `E${activeIndex + 2}`
         : "—";
 
   const initialLoad = loading;
@@ -1164,7 +1202,7 @@ export default function BreaktimeMonitoringPage() {
               type="text"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search name or employee number..."
+              placeholder="Search name, ID or position..."
               aria-label="Search employees"
               className="h-9 w-full rounded-lg border border-[#E3EAF5] pl-9 pr-8 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
             />
@@ -1418,6 +1456,7 @@ export default function BreaktimeMonitoringPage() {
                   const active = activeId === employee.id;
                   const busy = actionEmployeeId === employee.id;
                   const name = getEmployeeName(employee);
+                  const position = getPositionName(employee);
                   const availableSchedules = getAvailableSchedules(employee);
                   const scheduleId = selectedSchedules[employee.id] || "";
 
@@ -1483,6 +1522,13 @@ export default function BreaktimeMonitoringPage() {
                         className={`${CELL} select-none truncate text-slate-600 ${rowBg}`}
                       >
                         {employee.department_name || "—"}
+                      </td>
+
+                      <td
+                        title={position || undefined}
+                        className={`${CELL} select-none truncate text-slate-600 ${rowBg}`}
+                      >
+                        {position || <span className="text-slate-300">—</span>}
                       </td>
 
                       <td className={`${CELL} select-none p-0`}>

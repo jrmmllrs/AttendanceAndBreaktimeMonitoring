@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   CalendarDays,
+  CalendarOff,
   Check,
   CheckCheck,
   CheckCircle2,
@@ -28,10 +31,13 @@ const TIME_ZONE = "Asia/Manila";
  *   Click a row ........ select it        Shift+click ... select a range
  *   Ctrl/Cmd+click ..... add / remove      Drag row # .... select a range
  *   Double-click the Attendance cell ..... toggle Present / Absent
+ *   Click a column title (Name, Department, Position, Attendance) to sort.
+ *   Click again for descending, a third time to clear the sort.
  *
  * Keyboard (click the sheet first)
  *   ↑ / ↓ ......... move       Shift+↑/↓ ... extend selection
- *   P / A ......... mark Present / Absent (single row: jumps to the next row)
+ *   P / A / L ..... mark Present / Absent / On leave (single row: jumps to
+ *                   the next row)
  *   Backspace ..... revert selected rows to their saved value
  *   Ctrl+A ........ select all visible rows
  *   Ctrl+S ........ save       Esc ........ clear selection
@@ -39,6 +45,9 @@ const TIME_ZONE = "Asia/Manila";
  * Brand palette (same as Dashboard): white + blue + red, grays for neutrals.
  *   Blue #1D63D6 · Deep blue #0B3A8C · Light blue #EAF1FD / #F7FAFE
  *   Red  #C8102E · Light red #FDECEF · Border #E3EAF5
+ *
+ * Position: read from `position_name` on each employee returned by
+ * /attendance/management/manual-employees.
  */
 
 /* ---------- Helpers ---------- */
@@ -76,6 +85,9 @@ const getFullName = (employee) =>
     .filter(Boolean)
     .join(" ");
 
+const getPositionName = (employee) =>
+  employee?.position_name || employee?.position?.name || "";
+
 const formatShift = (employee) => {
   const shift = employee?.shift;
 
@@ -94,11 +106,22 @@ const formatShift = (employee) => {
 const statusLabel = (status) => {
   if (status === "present") return "Present";
   if (status === "absent") return "Absent";
+  if (status === "on_leave") return "On leave";
   if (status) return String(status).replaceAll("_", " ");
   return "Not recorded";
 };
 
-const isMarked = (status) => status === "present" || status === "absent";
+const isMarked = (status) =>
+  status === "present" || status === "absent" || status === "on_leave";
+
+/* Not recorded 0 · absent 1 · on leave 2 · other 3 · present 4 */
+const statusRank = (status) => {
+  if (!status) return 0;
+  if (status === "absent") return 1;
+  if (status === "on_leave") return 2;
+  if (status === "present") return 4;
+  return 3;
+};
 
 /* ---------- Sheet layout ---------- */
 
@@ -107,10 +130,12 @@ const COLUMNS = [
   { key: "id", letter: "A", label: "Employee ID", width: 120 },
   { key: "name", letter: "B", label: "Employee name", width: 240 },
   { key: "dept", letter: "C", label: "Department", width: 180 },
-  { key: "shift", letter: "D", label: "Assigned shift", width: 210 },
-  { key: "status", letter: "E", label: "Attendance", width: 160 },
+  { key: "position", letter: "D", label: "Position", width: 180 },
+  { key: "shift", letter: "E", label: "Assigned shift", width: 210 },
+  { key: "status", letter: "F", label: "Attendance", width: 160 },
 ];
 
+const SORTABLE = new Set(["name", "dept", "position", "status"]);
 const TOTAL_WIDTH = COLUMNS.reduce((sum, column) => sum + column.width, 0);
 const LEFT_OFFSETS = { no: 0, id: 48, name: 168 };
 
@@ -198,6 +223,9 @@ function StatusCell({ status, changed }) {
   } else if (status === "absent") {
     fill = "bg-[#FDECEF] text-[#C8102E] font-semibold";
     text = "Absent";
+  } else if (status === "on_leave") {
+    fill = "bg-[#F4F8FE] text-[#3F6FC4] font-semibold";
+    text = "On leave";
   } else if (status) {
     fill = "bg-[#F7FAFE] text-[#0B3A8C] font-medium capitalize";
     text = statusLabel(status);
@@ -225,6 +253,7 @@ const STATUS_TABS = [
   { key: "all", label: "All" },
   { key: "present", label: "Present" },
   { key: "absent", label: "Absent" },
+  { key: "on_leave", label: "On leave" },
   { key: "unrecorded", label: "Not recorded" },
   { key: "other", label: "Other" },
 ];
@@ -242,6 +271,7 @@ export default function AttendanceManagementPage() {
   const [search, setSearch] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -312,6 +342,7 @@ export default function AttendanceManagementPage() {
 
       if (status === "present") return "present";
       if (status === "absent") return "absent";
+      if (status === "on_leave") return "on_leave";
       if (!status) return "unrecorded";
       return "other";
     },
@@ -319,7 +350,13 @@ export default function AttendanceManagementPage() {
   );
 
   const summary = useMemo(() => {
-    const counts = { present: 0, absent: 0, unrecorded: 0, other: 0 };
+    const counts = {
+      present: 0,
+      absent: 0,
+      on_leave: 0,
+      unrecorded: 0,
+      other: 0,
+    };
 
     employees.forEach((employee) => {
       counts[getBucket(employee)] += 1;
@@ -328,7 +365,7 @@ export default function AttendanceManagementPage() {
     return { total: employees.length, ...counts };
   }, [employees, getBucket]);
 
-  const filteredEmployees = useMemo(() => {
+  const matchedEmployees = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
 
     return employees.filter((employee) => {
@@ -336,11 +373,13 @@ export default function AttendanceManagementPage() {
       const employeeNumber = String(
         employee.employee_number || "",
       ).toLowerCase();
+      const positionName = getPositionName(employee).toLowerCase();
 
       const matchesSearch =
         !normalizedSearch ||
         fullName.includes(normalizedSearch) ||
-        employeeNumber.includes(normalizedSearch);
+        employeeNumber.includes(normalizedSearch) ||
+        positionName.includes(normalizedSearch);
 
       const matchesDepartment =
         departmentFilter === "all" ||
@@ -352,6 +391,50 @@ export default function AttendanceManagementPage() {
       return matchesSearch && matchesDepartment && matchesStatus;
     });
   }, [employees, search, departmentFilter, statusFilter, getBucket]);
+
+  /*
+   * Sorted rows. Attendance sorting uses the saved value, not the live one,
+   * so rows don't jump around while you are marking them.
+   */
+  const filteredEmployees = useMemo(() => {
+    if (!sort.key) return matchedEmployees;
+
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const byName = (a, b) =>
+      getFullName(a).toLowerCase().localeCompare(getFullName(b).toLowerCase());
+
+    return [...matchedEmployees].sort((a, b) => {
+      if (sort.key === "name") return byName(a, b) * dir;
+
+      if (sort.key === "dept") {
+        return (
+          String(a.department_name || "")
+            .toLowerCase()
+            .localeCompare(String(b.department_name || "").toLowerCase()) *
+            dir || byName(a, b)
+        );
+      }
+
+      if (sort.key === "position") {
+        const aPosition = getPositionName(a).toLowerCase();
+        const bPosition = getPositionName(b).toLowerCase();
+
+        // Employees without a position always go last
+        if (!aPosition && !bPosition) return byName(a, b);
+        if (!aPosition) return 1;
+        if (!bPosition) return -1;
+
+        return aPosition.localeCompare(bPosition) * dir || byName(a, b);
+      }
+
+      // status
+      return (
+        (statusRank(originalStatuses[a.id]) -
+          statusRank(originalStatuses[b.id])) *
+          dir || byName(a, b)
+      );
+    });
+  }, [matchedEmployees, sort, originalStatuses]);
 
   const visibleIds = useMemo(
     () => filteredEmployees.map((employee) => employee.id),
@@ -392,6 +475,7 @@ export default function AttendanceManagementPage() {
     all: summary.total,
     present: summary.present,
     absent: summary.absent,
+    on_leave: summary.on_leave,
     unrecorded: summary.unrecorded,
     other: summary.other,
   };
@@ -427,6 +511,18 @@ export default function AttendanceManagementPage() {
       ?.querySelector(`[data-row="${activeId}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [activeId]);
+
+  /* ----- Sorting ----- */
+
+  const toggleSort = (key) => {
+    if (!SORTABLE.has(key)) return;
+
+    setSort((current) => {
+      if (current.key !== key) return { key, dir: "asc" };
+      if (current.dir === "asc") return { key, dir: "desc" };
+      return { key: null, dir: "asc" };
+    });
+  };
 
   /* ----- Selection ----- */
 
@@ -680,6 +776,12 @@ export default function AttendanceManagementPage() {
       return;
     }
 
+    if (key === "l") {
+      event.preventDefault();
+      applyStatus("on_leave", true);
+      return;
+    }
+
     if (key === "backspace" || key === "delete") {
       event.preventDefault();
       revertSelection();
@@ -698,14 +800,18 @@ export default function AttendanceManagementPage() {
     selectedCount > 1
       ? `${selectedCount} rows`
       : activeIndex >= 0
-        ? `E${activeIndex + 2}`
+        ? `F${activeIndex + 2}`
         : "—";
 
   const formulaText = activeEmployee
     ? `${getFullName(activeEmployee) || "Unnamed employee"} · ${
         activeEmployee.employee_number || "No ID"
+      }${
+        getPositionName(activeEmployee)
+          ? ` · ${getPositionName(activeEmployee)}`
+          : ""
       } — ${statusLabel(statusById[activeEmployee.id])}`
-    : "Click a row, then press P for Present or A for Absent.";
+    : "Click a row, then press P for Present, A for Absent or L for On leave.";
 
   return (
     <div className="space-y-5 pb-6">
@@ -826,7 +932,7 @@ export default function AttendanceManagementPage() {
               type="text"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search name or employee number..."
+              placeholder="Search name, ID or position..."
               aria-label="Search employees"
               className="h-9 w-full rounded-lg border border-[#E3EAF5] pl-9 pr-8 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#1D63D6] focus:ring-2 focus:ring-[#EAF1FD]"
             />
@@ -952,6 +1058,19 @@ export default function AttendanceManagementPage() {
 
             <button
               type="button"
+              onClick={() => applyStatus("on_leave", true)}
+              disabled={busy || !hasTargets}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[#3F6FC4] px-3 text-xs font-semibold text-white transition hover:bg-[#0B3A8C] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <CalendarOff size={13} />
+              Leave
+              <span className="hidden lg:inline">
+                <Kbd>L</Kbd>
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={revertSelection}
               disabled={busy || !hasTargets}
               aria-label="Revert selected rows"
@@ -968,7 +1087,7 @@ export default function AttendanceManagementPage() {
           ref={gridRef}
           tabIndex={0}
           onKeyDown={handleKeyDown}
-          aria-label="Attendance grid. Use arrow keys to move, P for present, A for absent."
+          aria-label="Attendance grid. Use arrow keys to move, P for present, A for absent, L for on leave."
           className="relative min-h-0 flex-1 select-none overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#1D63D6]/40"
         >
           {loading ? (
@@ -1006,24 +1125,53 @@ export default function AttendanceManagementPage() {
                   ))}
                 </tr>
 
-                {/* Column names */}
+                {/* Column names (click to sort) */}
                 <tr>
-                  {COLUMNS.map((column) => (
-                    <th
-                      key={column.key}
-                      style={{
-                        top: 24,
-                        ...(LEFT_OFFSETS[column.key] !== undefined
-                          ? { left: LEFT_OFFSETS[column.key] }
-                          : {}),
-                      }}
-                      className={`sticky h-9 border-b-2 border-r border-b-[#CFE0FA] border-r-[#E3EAF5] bg-[#F7FAFE] px-3 text-left text-xs font-semibold text-slate-600 ${
-                        LEFT_OFFSETS[column.key] !== undefined ? "z-30" : "z-20"
-                      } ${column.key === "status" ? "text-center" : ""}`}
-                    >
-                      {column.label}
-                    </th>
-                  ))}
+                  {COLUMNS.map((column) => {
+                    const sortable = SORTABLE.has(column.key);
+                    const sorted = sort.key === column.key;
+
+                    return (
+                      <th
+                        key={column.key}
+                        onClick={() => toggleSort(column.key)}
+                        aria-sort={
+                          sorted
+                            ? sort.dir === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : undefined
+                        }
+                        style={{
+                          top: 24,
+                          ...(LEFT_OFFSETS[column.key] !== undefined
+                            ? { left: LEFT_OFFSETS[column.key] }
+                            : {}),
+                        }}
+                        className={`sticky h-9 border-b-2 border-r border-b-[#CFE0FA] border-r-[#E3EAF5] bg-[#F7FAFE] px-3 text-left text-xs font-semibold text-slate-600 ${
+                          LEFT_OFFSETS[column.key] !== undefined
+                            ? "z-30"
+                            : "z-20"
+                        } ${
+                          sortable ? "cursor-pointer hover:bg-[#EAF1FD]" : ""
+                        } ${column.key === "status" ? "text-center" : ""}`}
+                      >
+                        <span
+                          className={`inline-flex items-center gap-1 ${
+                            column.key === "status" ? "justify-center" : ""
+                          }`}
+                        >
+                          {column.label}
+                          {sorted &&
+                            (sort.dir === "asc" ? (
+                              <ArrowUp size={12} className="text-[#1D63D6]" />
+                            ) : (
+                              <ArrowDown size={12} className="text-[#1D63D6]" />
+                            ))}
+                        </span>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
 
@@ -1032,6 +1180,7 @@ export default function AttendanceManagementPage() {
                   const selected = selectedSet.has(employee.id);
                   const active = activeId === employee.id;
                   const status = statusById[employee.id];
+                  const position = getPositionName(employee);
                   const changed =
                     isMarked(status) &&
                     status !== originalStatuses[employee.id];
@@ -1088,6 +1237,13 @@ export default function AttendanceManagementPage() {
                       </td>
 
                       <td
+                        title={position || undefined}
+                        className={`${CELL} truncate text-slate-600 ${rowBg}`}
+                      >
+                        {position || <span className="text-slate-300">—</span>}
+                      </td>
+
+                      <td
                         className={`${CELL} truncate text-slate-600 ${rowBg}`}
                       >
                         {formatShift(employee)}
@@ -1135,6 +1291,9 @@ export default function AttendanceManagementPage() {
               Absent: <b className="text-[#C8102E]">{summary.absent}</b>
             </span>
             <span>
+              On leave: <b className="text-[#3F6FC4]">{summary.on_leave}</b>
+            </span>
+            <span>
               Not recorded:{" "}
               <b className="text-slate-800">{summary.unrecorded}</b>
             </span>
@@ -1148,8 +1307,8 @@ export default function AttendanceManagementPage() {
             )}
             <span className="hidden items-center gap-1.5 xl:inline-flex">
               <Kbd>↑</Kbd>
-              <Kbd>↓</Kbd> move · <Kbd>P</Kbd> / <Kbd>A</Kbd> mark ·{" "}
-              <Kbd>Shift</Kbd> range · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save
+              <Kbd>↓</Kbd> move · <Kbd>P</Kbd> / <Kbd>A</Kbd> / <Kbd>L</Kbd>{" "}
+              mark · <Kbd>Shift</Kbd> range · <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save
             </span>
           </div>
 
